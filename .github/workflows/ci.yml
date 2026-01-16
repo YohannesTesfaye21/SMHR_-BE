@@ -67,7 +67,8 @@ jobs:
         env:
           ConnectionStrings__DefaultConnection: Host=localhost;Port=5432;Database=smhfr_db;Username=postgres;Password=postgres
         run: |
-          dotnet ef database update
+          dotnet restore SMHFR_BE.csproj
+          dotnet ef database update --project SMHFR_BE.csproj
 
       - name: Start all Docker Compose services
         run: |
