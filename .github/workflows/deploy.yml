@@ -1,0 +1,77 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI - Build and Test"]
+    branches:
+      - main
+      - master
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  DOTNET_VERSION: '8.0.x'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Only run if CI workflow succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Determine environment
+        id: env
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" == "refs/heads/main" ] || [ "${{ github.ref }}" == "refs/heads/master" ]; then
+            echo "environment=production" >> $GITHUB_OUTPUT
+          else
+            echo "environment=staging" >> $GITHUB_OUTPUT
+          fi
+          echo "Deploying to: ${{ steps.env.outputs.environment }}"
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image for deployment
+        run: |
+          docker-compose -f docker-compose.yml build api
+          echo "Docker image built successfully for ${{ steps.env.outputs.environment }}"
+
+      - name: Deployment placeholder
+        run: |
+          echo "🚀 Deployment to ${{ steps.env.outputs.environment }} environment"
+          echo "📦 Docker image has been built and is ready for deployment"
+          echo ""
+          echo "Next steps:"
+          echo "  - Push Docker image to container registry (Docker Hub, GHCR, etc.)"
+          echo "  - Deploy to your target environment (AWS, Azure, Kubernetes, etc.)"
+          echo "  - Configure environment variables and secrets"
+          echo "  - Set up health checks and monitoring"
+
+      # TODO: Add actual deployment steps here
+      # Examples:
+      # - Push to Docker Hub / GHCR
+      # - Deploy to Azure Container Instances / AWS ECS / Kubernetes
+      # - Update service configurations
+      # - Run smoke tests
+      # - Rollback on failure
