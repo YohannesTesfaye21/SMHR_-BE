@@ -44,10 +44,24 @@ jobs:
           echo "Waiting for PostgreSQL to be ready..."
           timeout 60 bash -c 'until docker compose -f docker-compose.yml exec -T postgres pg_isready -U postgres; do sleep 2; done'
 
-      - name: Install EF Core tools and run migrations
+      - name: Cache dotnet tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.dotnet/tools
+          key: ${{ runner.os }}-dotnet-tools-ef
+
+      - name: Install EF Core tools
         run: |
-          echo "Installing EF Core tools..."
-          docker compose -f docker-compose.yml run --rm --no-deps api bash -c "dotnet tool install --global dotnet-ef && export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet ef database update"
+          if ! dotnet tool list -g | grep -q dotnet-ef; then
+            dotnet tool install --global dotnet-ef
+          fi
+          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+
+      - name: Run database migrations
+        env:
+          ConnectionStrings__DefaultConnection: Host=localhost;Port=5432;Database=smhfr_db;Username=postgres;Password=postgres
+        run: |
+          dotnet ef database update
 
       - name: Start all Docker Compose services
         run: |
