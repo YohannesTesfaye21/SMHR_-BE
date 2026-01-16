@@ -54,7 +54,7 @@ jobs:
 
       - name: Build Docker image for deployment
         run: |
-          docker-compose -f docker-compose.yml build api
+          docker compose -f docker-compose.yml build api
           echo "Docker image built successfully for ${{ steps.env.outputs.environment }}"
 
       - name: Deployment placeholder

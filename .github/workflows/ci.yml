@@ -39,25 +39,25 @@ jobs:
 
       - name: Build Docker Compose services
         run: |
-          docker-compose -f docker-compose.yml build
+          docker compose -f docker-compose.yml build
 
       - name: Start PostgreSQL only
         run: |
-          docker-compose -f docker-compose.yml up -d postgres
+          docker compose -f docker-compose.yml up -d postgres
 
       - name: Wait for PostgreSQL to be ready
         run: |
           echo "Waiting for PostgreSQL to be ready..."
-          timeout 60 bash -c 'until docker-compose -f docker-compose.yml exec -T postgres pg_isready -U postgres; do sleep 2; done'
+          timeout 60 bash -c 'until docker compose -f docker-compose.yml exec -T postgres pg_isready -U postgres; do sleep 2; done'
 
       - name: Install EF Core tools and run migrations
         run: |
           echo "Installing EF Core tools..."
-          docker-compose -f docker-compose.yml run --rm --no-deps api bash -c "dotnet tool install --global dotnet-ef && export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet ef database update"
+          docker compose -f docker-compose.yml run --rm --no-deps api bash -c "dotnet tool install --global dotnet-ef && export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet ef database update"
 
       - name: Start all Docker Compose services
         run: |
-          docker-compose -f docker-compose.yml up -d
+          docker compose -f docker-compose.yml up -d
 
       - name: Wait for API to be healthy
         run: |
@@ -74,11 +74,11 @@ jobs:
         if: failure()
         run: |
           echo "=== API Logs ==="
-          docker-compose -f docker-compose.yml logs api
+          docker compose -f docker-compose.yml logs api
           echo "=== PostgreSQL Logs ==="
-          docker-compose -f docker-compose.yml logs postgres
+          docker compose -f docker-compose.yml logs postgres
 
       - name: Stop Docker Compose services
         if: always()
         run: |
-          docker-compose -f docker-compose.yml down -v
+          docker compose -f docker-compose.yml down -v
