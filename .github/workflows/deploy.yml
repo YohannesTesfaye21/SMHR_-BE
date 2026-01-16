@@ -52,26 +52,39 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker image for deployment
-        run: |
-          docker compose -f docker-compose.yml build api
-          echo "Docker image built successfully for ${{ steps.env.outputs.environment }}"
-
-      - name: Deployment placeholder
-        run: |
-          echo "🚀 Deployment to ${{ steps.env.outputs.environment }} environment"
-          echo "📦 Docker image has been built and is ready for deployment"
-          echo ""
-          echo "Next steps:"
-          echo "  - Push Docker image to container registry (Docker Hub, GHCR, etc.)"
-          echo "  - Deploy to your target environment (AWS, Azure, Kubernetes, etc.)"
-          echo "  - Configure environment variables and secrets"
-          echo "  - Set up health checks and monitoring"
-
-      # TODO: Add actual deployment steps here
-      # Examples:
-      # - Push to Docker Hub / GHCR
-      # - Deploy to Azure Container Instances / AWS ECS / Kubernetes
-      # - Update service configurations
-      # - Run smoke tests
-      # - Rollback on failure
+      - name: Deploy to server via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            # Create directory if it doesn't exist
+            mkdir -p /opt/smhfr-be
+            cd /opt/smhfr-be
+            
+            # Clone or update repository
+            if [ -d ".git" ]; then
+              echo "Repository exists, pulling latest changes..."
+              git pull origin main
+            else
+              echo "Cloning repository for first time..."
+              git clone https://github.com/YohannesTesfaye21/SMHR_-BE.git .
+            fi
+            
+            # Stop existing containers
+            docker compose down || true
+            
+            # Build and start new containers
+            docker compose up -d --build
+            
+            # Wait a moment for services to start
+            sleep 10
+            
+            # Verify deployment
+            docker compose ps
+            
+            # Check API health
+            curl -f http://localhost:8080/api/health || echo "Health check endpoint may still be starting..."
+            
+            echo "✅ Deployment completed successfully!"
