@@ -86,13 +86,33 @@ jobs:
             # Create directory if it doesn't exist
             mkdir -p /opt/smhfr-be
             cd /opt/smhfr-be
+            echo "Current directory: $(pwd)"
+            echo "Directory contents before clone:"
+            ls -la || echo "Directory is empty or doesn't exist"
             
             # Clone or update repository
-            if [ -d ".git" ]; then
+            if [ -d ".git" ] && [ -f "docker-compose.yml" ]; then
               echo "Repository exists, pulling latest changes..."
-              git pull origin main || echo "⚠️ Git pull failed, but continuing..."
+              git pull origin main || {
+                echo "⚠️ Git pull failed, removing and re-cloning..."
+                cd /
+                rm -rf /opt/smhfr-be
+                mkdir -p /opt/smhfr-be
+                cd /opt/smhfr-be
+                git clone https://github.com/YohannesTesfaye21/SMHR_-BE.git . || {
+                  echo "❌ Git clone failed!"
+                  exit 1
+                }
+              }
             else
               echo "Cloning repository for first time..."
+              # Remove directory if it exists but isn't a valid repo
+              if [ -d "/opt/smhfr-be" ] && [ ! -f "/opt/smhfr-be/docker-compose.yml" ]; then
+                echo "Removing invalid directory contents..."
+                rm -rf /opt/smhfr-be/*
+                rm -rf /opt/smhfr-be/.* 2>/dev/null || true
+              fi
+              cd /opt/smhfr-be
               git clone https://github.com/YohannesTesfaye21/SMHR_-BE.git . || {
                 echo "❌ Git clone failed!"
                 exit 1
@@ -101,12 +121,17 @@ jobs:
             fi
             
             # Verify repository is valid
+            cd /opt/smhfr-be
             if [ ! -f "docker-compose.yml" ]; then
               echo "❌ docker-compose.yml not found! Clone may have failed."
+              echo "Current directory: $(pwd)"
+              echo "Directory contents:"
               ls -la
               exit 1
             fi
             echo "✅ Repository verified - docker-compose.yml found"
+            echo "Repository files:"
+            ls -la | head -20
             
             # Stop existing containers
             docker compose down || true
