@@ -59,6 +59,8 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
+            # Set up GitHub authentication for private repo
+            export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
             # Install Docker if not present
             if ! command -v docker &> /dev/null; then
               echo "Installing Docker..."
@@ -90,16 +92,19 @@ jobs:
             echo "Directory contents before clone:"
             ls -la || echo "Directory is empty or doesn't exist"
             
-            # Clone or update repository
+            # Clone or update repository using GitHub token
+            REPO_URL="https://${{ secrets.GITHUB_TOKEN }}@github.com/YohannesTesfaye21/SMHR_-BE.git"
+            
             if [ -d ".git" ] && [ -f "docker-compose.yml" ]; then
               echo "Repository exists, pulling latest changes..."
+              git remote set-url origin "$REPO_URL"
               git pull origin main || {
                 echo "⚠️ Git pull failed, removing and re-cloning..."
                 cd /
                 rm -rf /opt/smhfr-be
                 mkdir -p /opt/smhfr-be
                 cd /opt/smhfr-be
-                git clone https://github.com/YohannesTesfaye21/SMHR_-BE.git . || {
+                git clone "$REPO_URL" . || {
                   echo "❌ Git clone failed!"
                   exit 1
                 }
@@ -113,7 +118,7 @@ jobs:
                 rm -rf /opt/smhfr-be/.* 2>/dev/null || true
               fi
               cd /opt/smhfr-be
-              git clone https://github.com/YohannesTesfaye21/SMHR_-BE.git . || {
+              git clone "$REPO_URL" . || {
                 echo "❌ Git clone failed!"
                 exit 1
               }
@@ -133,10 +138,16 @@ jobs:
             echo "Repository files:"
             ls -la | head -20
             
-            # Stop existing containers
+            # Stop existing containers (from any location)
+            cd /opt/smhfr-be
             docker compose down || true
             
+            # Also stop containers that might be running from other locations
+            docker stop smhfr-api smhfr-postgres 2>/dev/null || true
+            docker rm smhfr-api smhfr-postgres 2>/dev/null || true
+            
             # Build and start new containers
+            cd /opt/smhfr-be
             docker compose up -d --build
             
             # Wait a moment for services to start
