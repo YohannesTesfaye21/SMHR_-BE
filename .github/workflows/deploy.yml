@@ -137,15 +137,21 @@ jobs:
             echo "Repository files:"
             ls -la | head -20
             
-            # Stop existing containers (from any location)
+            # Stop existing containers (PRESERVE VOLUMES to keep database data)
             cd /opt/smhfr-be
+            
+            # Check if postgres volume exists to ensure data preservation
+            if docker volume ls | grep -q "smhfr-be_postgres_data"; then
+              echo "✅ Database volume exists - data will be preserved"
+            else
+              echo "⚠️ Database volume not found - new database will be created"
+            fi
+            
+            # Use docker compose down WITHOUT -v flag to preserve volumes
+            # NEVER use 'docker compose down -v' as it deletes volumes and data!
             docker compose down || true
             
-            # Also stop containers that might be running from other locations
-            docker stop smhfr-api smhfr-postgres 2>/dev/null || true
-            docker rm smhfr-api smhfr-postgres 2>/dev/null || true
-            
-            # Build and start new containers
+            # Build and start new containers (volumes will be reused automatically)
             cd /opt/smhfr-be
             docker compose up -d --build
             
