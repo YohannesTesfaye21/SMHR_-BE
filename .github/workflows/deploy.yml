@@ -54,13 +54,16 @@ jobs:
 
       - name: Deploy to server via SSH
         uses: appleboy/ssh-action@v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            # Set up GitHub authentication for private repo
-            export GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}
+            # Configure git to use GitHub token
+            GITHUB_TOKEN="${GITHUB_TOKEN}"
+            REPO_URL="https://${GITHUB_TOKEN}@github.com/YohannesTesfaye21/SMHR_-BE.git"
             # Install Docker if not present
             if ! command -v docker &> /dev/null; then
               echo "Installing Docker..."
@@ -93,7 +96,11 @@ jobs:
             ls -la || echo "Directory is empty or doesn't exist"
             
             # Clone or update repository using GitHub token
-            REPO_URL="https://${{ secrets.GITHUB_TOKEN }}@github.com/YohannesTesfaye21/SMHR_-BE.git"
+            if [ -z "$GITHUB_TOKEN" ]; then
+              echo "❌ GITHUB_TOKEN not found!"
+              exit 1
+            fi
+            REPO_URL="https://${GITHUB_TOKEN}@github.com/YohannesTesfaye21/SMHR_-BE.git"
             
             if [ -d ".git" ] && [ -f "docker-compose.yml" ]; then
               echo "Repository exists, pulling latest changes..."
