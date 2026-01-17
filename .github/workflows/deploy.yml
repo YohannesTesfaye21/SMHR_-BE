@@ -147,9 +147,13 @@ jobs:
               echo "⚠️ Database volume not found - new database will be created"
             fi
             
-            # Use docker compose down WITHOUT -v flag to preserve volumes
-            # NEVER use 'docker compose down -v' as it deletes volumes and data!
+            # Stop containers using docker-compose (preserves volumes)
             docker compose down || true
+            
+            # Also ensure containers from any location are stopped
+            # This handles containers that might have been started manually
+            docker stop smhfr-api smhfr-postgres 2>/dev/null || true
+            # Don't remove containers yet - let docker-compose handle it
             
             # Build and start new containers (volumes will be reused automatically)
             cd /opt/smhfr-be
