@@ -150,10 +150,8 @@ jobs:
             # Stop containers using docker-compose (preserves volumes)
             docker compose down || true
             
-            # Also ensure containers from any location are stopped
-            # This handles containers that might have been started manually
-            docker stop smhfr-api smhfr-postgres 2>/dev/null || true
-            # Don't remove containers yet - let docker-compose handle it
+            # Clean up any stopped containers to avoid conflicts
+            docker container prune -f
             
             # Build and start new containers (volumes will be reused automatically)
             cd /opt/smhfr-be
