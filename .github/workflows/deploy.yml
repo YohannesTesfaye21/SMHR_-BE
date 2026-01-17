@@ -93,6 +93,7 @@ jobs:
             ls -la || echo "Directory is empty or doesn't exist"
             
             # Clone or update repository (public repo, no auth needed)
+            REPO_URL="https://github.com/YohannesTesfaye21/SMHR_-BE.git"
             
             if [ -d ".git" ] && [ -f "docker-compose.yml" ]; then
               echo "Repository exists, pulling latest changes..."
