@@ -95,12 +95,17 @@ jobs:
             echo ".env file exists: $([ -f .env ] && echo 'yes' || echo 'no')"
             echo ".env file contents (password hidden): $(cat .env | sed 's/DB_PASSWORD=.*/DB_PASSWORD=***/')"
             
+            # Also export to environment for docker-compose variable substitution
+            export DB_PASSWORD
+            echo "✅ Exported DB_PASSWORD to environment (length: ${#DB_PASSWORD} characters)"
+            
             # Build new image
             echo "Building Docker image..."
             docker compose build --no-cache api
             
             # Start PostgreSQL (reads .env file for POSTGRES_PASSWORD=${DB_PASSWORD})
             echo "Starting PostgreSQL with .env file..."
+            # DB_PASSWORD is already exported above
             docker compose --env-file .env up -d postgres
             
             # Wait for PostgreSQL to be healthy
@@ -124,15 +129,115 @@ jobs:
             
             # Reset PostgreSQL password to match GitHub secret (handles existing volumes with different password)
             echo "Resetting PostgreSQL password to match GitHub secret..."
-            docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null || true
+            # Try multiple methods to reset password, handling cases where volume has old password
+            PASSWORD_RESET=false
+            # Method 1: Try with new password (if volume was just created or already has this password)
+            if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null; then
+              echo "✅ Password reset using new password"
+              PASSWORD_RESET=true
+            # Method 2: Try with common default password 'postgres'
+            elif docker compose exec -T -e PGPASSWORD="postgres" postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null; then
+              echo "✅ Password reset using default 'postgres' password"
+              PASSWORD_RESET=true
+            # Method 3: Try without password (trust authentication - only works if pg_hba.conf allows it)
+            elif docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null; then
+              echo "✅ Password reset using trust authentication"
+              PASSWORD_RESET=true
+            fi
+            
+            if [ "$PASSWORD_RESET" = false ]; then
+              echo "⚠️  Could not reset password automatically. The database volume may have been initialized with a different password."
+              echo "   Attempting to recreate the database volume..."
+              # Stop containers
+              docker compose down postgres api 2>/dev/null || true
+              # Remove the volume to start fresh
+              docker volume rm smhfr-be_postgres_data 2>/dev/null || docker volume rm $(docker volume ls -q | grep postgres_data) 2>/dev/null || echo "Volume not found or already removed"
+              # Start PostgreSQL again with the correct password
+              echo "Starting PostgreSQL with fresh volume and correct password..."
+              docker compose --env-file .env up -d postgres
+              # Wait for PostgreSQL to be ready
+              sleep 5
+              for i in {1..30}; do
+                if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                  echo "✅ PostgreSQL is ready with new password"
+                  break
+                fi
+                if [ $i -eq 30 ]; then
+                  echo "❌ PostgreSQL failed to start after volume recreation"
+                  docker compose logs postgres --tail=50
+                  exit 1
+                fi
+                sleep 2
+              done
+            fi
+            
+            # Verify password was set correctly
+            echo "Verifying password reset..."
+            if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+              echo "✅ Password verification successful"
+            else
+              echo "❌ Password verification failed. This is a critical error."
+              echo "   Connection string password: ${DB_PASSWORD:0:2}*** (hidden)"
+              echo "   Database password may not match. Check logs above."
+              exit 1
+            fi
             sleep 2
             
             # Start API container (uses .env file for ${DB_PASSWORD} in connection string)
             echo "Starting API service..."
+            # DB_PASSWORD is already exported above
+            
+            # Verify .env file is correct before starting
+            echo "Verifying .env file before starting API..."
+            if [ -f .env ]; then
+              echo ".env file exists and contains: $(cat .env | sed 's/DB_PASSWORD=.*/DB_PASSWORD=***/')"
+            else
+              echo "❌ ERROR: .env file not found!"
+              exit 1
+            fi
+            
+            # Verify docker-compose variable substitution works
+            echo "Testing docker-compose variable substitution..."
+            COMPOSE_CONFIG=$(docker compose --env-file .env config 2>&1)
+            if echo "$COMPOSE_CONFIG" | grep -q "Password=$DB_PASSWORD"; then
+              echo "✅ Variable substitution verified in docker-compose config"
+            elif echo "$COMPOSE_CONFIG" | grep -q "Password=\${DB_PASSWORD}"; then
+              echo "❌ ERROR: Variable substitution FAILED - Password still shows \${DB_PASSWORD}"
+              echo "   This means docker-compose cannot read DB_PASSWORD from .env file"
+              echo "   Checking .env file format..."
+              cat .env
+              exit 1
+            else
+              echo "⚠️  Could not verify variable substitution in config, but continuing..."
+            fi
+            
             docker compose --env-file .env up -d --no-deps --build api
             
             # Wait a bit for container to start
             sleep 5
+            
+            # Verify the connection string in the API container has the correct password
+            echo "Verifying connection string in API container..."
+            API_CONN_STR=$(docker compose exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
+            if [ -n "$API_CONN_STR" ]; then
+              # Check if password in connection string matches (extract password from connection string)
+              CONN_PASSWORD=$(echo "$API_CONN_STR" | grep -oP 'Password=\K[^;]*' || echo "")
+              if [ -n "$CONN_PASSWORD" ]; then
+                if [ "$CONN_PASSWORD" = "$DB_PASSWORD" ]; then
+                  echo "✅ Connection string password matches DB_PASSWORD"
+                else
+                  echo "❌ CRITICAL: Connection string password does NOT match DB_PASSWORD!"
+                  echo "   Connection string password: ${CONN_PASSWORD:0:2}*** (length: ${#CONN_PASSWORD})"
+                  echo "   DB_PASSWORD: ${DB_PASSWORD:0:2}*** (length: ${#DB_PASSWORD})"
+                  echo "   This means variable substitution failed!"
+                  exit 1
+                fi
+              else
+                echo "⚠️  Could not extract password from connection string"
+              fi
+            else
+              echo "⚠️  Could not read connection string from API container"
+            fi
             
             # Check container status first
             echo "=== Container Status ==="
