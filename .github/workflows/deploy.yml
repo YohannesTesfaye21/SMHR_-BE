@@ -161,26 +161,34 @@ jobs:
             
             # Update PostgreSQL password if it doesn't match .env
             # PostgreSQL only uses POSTGRES_PASSWORD during initial creation, so we update it directly
+            # Local connections within container don't require password (trust authentication)
             log_info "Checking PostgreSQL password..."
             sleep 2
             if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
               log_info "PostgreSQL password doesn't match .env. Updating password..."
-              # Try with default password first, then update
-              if $COMPOSE_CMD exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${DB_PASSWORD}';" 2>/dev/null; then
+              # Connect locally (no password needed for Unix socket connections in container)
+              # Try updating password - this should work via local connection
+              UPDATE_RESULT=$($COMPOSE_CMD exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${DB_PASSWORD}';" 2>&1)
+              if [ $? -eq 0 ]; then
                 log_success "PostgreSQL password updated successfully"
+                sleep 1
               else
-                # If that fails, volume might be corrupted - log error but continue
-                log_error "Failed to update PostgreSQL password. Database might need volume recreation."
+                log_error "Failed to update PostgreSQL password: $UPDATE_RESULT"
+                log_error "This usually means the volume has a different password. Consider recreating the volume."
+                exit 1
               fi
             else
               log_success "PostgreSQL password already matches .env file"
             fi
             
-            # Verify PostgreSQL password matches .env after update
+            # Verify PostgreSQL password matches .env after update - MUST pass or deployment fails
             log_info "Verifying PostgreSQL password..."
-            sleep 1
+            sleep 2
             if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              log_error "PostgreSQL password verification failed after update. Check database configuration."
+              log_error "PostgreSQL password verification FAILED after update!"
+              log_error "The database password does not match .env DB_PASSWORD."
+              log_error "Deployment cannot continue with mismatched passwords."
+              exit 1
             fi
             log_success "PostgreSQL password verified - matches .env file"
             
