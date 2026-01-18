@@ -34,7 +34,7 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
         env:
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD || 'postgres' }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
@@ -85,43 +85,15 @@ jobs:
             echo "Using DB_PASSWORD from environment (from GitHub secret)"
             echo "DB_PASSWORD value is set (length: ${#DB_PASSWORD} characters)"
             
-            # Create .env file for docker-compose to use (must be in same directory as docker-compose.yml)
+            # Create .env file - Docker Compose reads this automatically for ${DB_PASSWORD} substitution
             echo "DB_PASSWORD=$DB_PASSWORD" > .env
-            echo "Created .env file with DB_PASSWORD"
-            
-            # Verify .env file was created correctly
-            if [ ! -f ".env" ] || ! grep -q "DB_PASSWORD=" .env; then
-              echo "❌ ERROR: Failed to create .env file!"
-              exit 1
-            fi
-            echo "✅ .env file verified: DB_PASSWORD is set"
-            
-            # Also set the connection string directly as environment variable for API
-            # Docker Compose may not substitute variables inside environment variable values
-            export CONNECTION_STRING="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=$DB_PASSWORD;Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
             
             # Build new image
             echo "Building Docker image..."
             docker compose build --no-cache api
             
-            # Start PostgreSQL first (preserves data)
-            # Ensure we're in the directory with docker-compose.yml and .env file
-            echo "Current directory: $(pwd)"
-            echo "Files in directory:"
-            ls -la | head -10
-            
-            echo "Ensuring PostgreSQL is running with DB_PASSWORD from .env file..."
-            # docker-compose automatically reads .env file in the same directory
+            # Start PostgreSQL
             docker compose up -d postgres
-            
-            # Verify PostgreSQL got the password from .env file
-            PG_ENV_PASSWORD=$(docker compose exec -T postgres printenv POSTGRES_PASSWORD 2>/dev/null || echo "")
-            if [ -z "$PG_ENV_PASSWORD" ]; then
-              echo "❌ ERROR: PostgreSQL container doesn't have POSTGRES_PASSWORD set!"
-              echo "This means .env file wasn't read correctly by docker-compose"
-              exit 1
-            fi
-            echo "✅ PostgreSQL container has POSTGRES_PASSWORD set (length: ${#PG_ENV_PASSWORD} characters)"
             
             # Wait for PostgreSQL to be healthy
             echo "Waiting for PostgreSQL..."
@@ -131,69 +103,10 @@ jobs:
               exit 1
             }
             
-            # Always reset password to match GitHub secret (PostgreSQL volume might have different password)
-            echo "Ensuring PostgreSQL password matches GitHub secret..."
-            echo "Resetting password to value from GitHub secret..."
-            
-            # Reset password using Unix socket (local connection, no password required for socket)
-            # This MUST succeed - if it doesn't, PostgreSQL might have a different password and we can't reset it
-            echo "Attempting password reset via Unix socket..."
-            if docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" > /dev/null 2>&1; then
-              echo "✅ Password reset via socket succeeded"
-            else
-              echo "⚠️  Password reset via socket failed, trying with TCP connection..."
-              # Try with different possible passwords to reset
-              for OLD_PASS in "postgres" ""; do
-                if [ -n "$OLD_PASS" ]; then
-                  PGPASSWORD="$OLD_PASS" docker compose exec -T -e PGPASSWORD="$OLD_PASS" postgres psql -U postgres -h localhost -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" > /dev/null 2>&1 && {
-                    echo "✅ Password reset succeeded using old password"
-                    break
-                  }
-                fi
-              done
-            fi
-            
+            # Reset PostgreSQL password to match GitHub secret (handles existing volumes with different password)
+            echo "Resetting PostgreSQL password to match GitHub secret..."
+            docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null || true
             sleep 2
-            
-            # Verify database connection with password from GitHub secret (using TCP, not socket)
-            echo "Verifying database connection with password from GitHub secret..."
-            sleep 3  # Give PostgreSQL time to process password change
-            
-            RETRY_COUNT=0
-            MAX_VERIFY_RETRIES=5
-            VERIFICATION_SUCCESS=false
-            
-            while [ $RETRY_COUNT -lt $MAX_VERIFY_RETRIES ]; do
-              if PGPASSWORD="$DB_PASSWORD" docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -h localhost -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
-                echo "✅ Database connection verified with password from GitHub secret (TCP connection)"
-                VERIFICATION_SUCCESS=true
-                break
-              else
-                RETRY_COUNT=$((RETRY_COUNT + 1))
-                echo "Verification attempt $RETRY_COUNT/$MAX_VERIFY_RETRIES failed, retrying..."
-                sleep 2
-              fi
-            done
-            
-            if [ "$VERIFICATION_SUCCESS" != "true" ]; then
-              echo "❌ Database connection failed even after password reset!"
-              echo "Password might not have been reset correctly, or PostgreSQL volume needs to be recreated."
-              echo ""
-              echo "DB_PASSWORD length: ${#DB_PASSWORD} characters"
-              echo "Testing what password PostgreSQL currently accepts..."
-              
-              # Test with common passwords
-              for TEST_PASS in "$DB_PASSWORD" "postgres" ""; do
-                if [ -n "$TEST_PASS" ]; then
-                  if PGPASSWORD="$TEST_PASS" docker compose exec -T -e PGPASSWORD="$TEST_PASS" postgres psql -U postgres -h localhost -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
-                    echo "⚠️  PostgreSQL accepts password: $TEST_PASS (length: ${#TEST_PASS})"
-                  fi
-                fi
-              done
-              
-              docker compose logs postgres --tail=30
-              exit 1
-            fi
             
             # Start API container
             echo "Starting API service..."
