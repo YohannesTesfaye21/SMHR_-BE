@@ -89,7 +89,7 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
         npgsqlOptions.EnableRetryOnFailure(
             maxRetryCount: 10,
             maxRetryDelay: TimeSpan.FromSeconds(30),
-            errorCodesToRetryOn: new[] { "57P01", "57P02", "57P03", "08003", "08006", "08001", "40001", "40P01" }))); // Connection and deadlock errors, but NOT password auth (28P01)
+            errorCodesToAdd: new[] { "57P01", "57P02", "57P03", "08003", "08006", "08001", "40001", "40P01" }))); // Connection and deadlock errors, but NOT password auth (28P01)
 
 // Configure Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
