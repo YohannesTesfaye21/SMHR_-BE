@@ -56,41 +56,11 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 // Configure PostgreSQL connection
-// .NET automatically uses environment variable ConnectionStrings__DefaultConnection if set, otherwise appsettings.json
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") 
     ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
 
-// Enhance connection string with better connection management settings
-var enhancedConnectionString = connectionString;
-var connectionParams = new List<string>();
-
-// Add parameters only if not already present
-if (!connectionString.Contains("Command Timeout", StringComparison.OrdinalIgnoreCase))
-{
-    connectionParams.Add("Command Timeout=30");
-}
-if (!connectionString.Contains("Connection Lifetime", StringComparison.OrdinalIgnoreCase))
-{
-    connectionParams.Add("Connection Lifetime=300");
-}
-if (!connectionString.Contains("Pooling", StringComparison.OrdinalIgnoreCase))
-{
-    connectionParams.Add("Pooling=true");
-    connectionParams.Add("Minimum Pool Size=0");
-    connectionParams.Add("Maximum Pool Size=100");
-}
-
-if (connectionParams.Count > 0)
-{
-    enhancedConnectionString = connectionString.TrimEnd(';') + ";" + string.Join(";", connectionParams);
-}
-
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseNpgsql(enhancedConnectionString, npgsqlOptions =>
-        npgsqlOptions.EnableRetryOnFailure(
-            maxRetryCount: 10,
-            maxRetryDelay: TimeSpan.FromSeconds(30),
-            errorCodesToAdd: new[] { "57P01", "57P02", "57P03", "08003", "08006", "08001", "40001", "40P01" }))); // Connection and deadlock errors, but NOT password auth (28P01)
+    options.UseNpgsql(connectionString));
 
 // Configure Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
@@ -218,82 +188,11 @@ app.UseAuthorization();
 
 app.MapControllers();
 
-// Apply pending migrations and seed admin user on startup with connection validation
+// Apply pending migrations and seed admin user on startup
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
     var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-    
-    // Validate database connection with retries
-    int retryCount = 0;
-    const int maxRetries = 10;
-    bool connectionValid = false;
-    
-    while (retryCount < maxRetries && !connectionValid)
-    {
-        try
-        {
-            logger.LogInformation("Attempting to connect to database (attempt {Attempt}/{MaxRetries})...", retryCount + 1, maxRetries);
-            
-            // Test connection - this will throw an exception if there's an error
-            // CanConnect() can return false without throwing, so we force a query execution
-            db.Database.ExecuteSqlRaw("SELECT 1");
-            connectionValid = true;
-            logger.LogInformation("✅ Database connection validated successfully");
-            break;
-        }
-        catch (Npgsql.PostgresException pgEx) when (pgEx.SqlState == "28P01")
-        {
-            logger.LogError(pgEx, "❌ Database password authentication failed (attempt {Attempt}/{MaxRetries})", retryCount + 1, maxRetries);
-            
-            // Clear connection pool on authentication failure
-            Npgsql.NpgsqlConnection.ClearAllPools();
-            logger.LogInformation("Cleared Npgsql connection pool");
-            
-            if (retryCount >= maxRetries - 1)
-            {
-                logger.LogCritical("FATAL: Cannot connect to database after {MaxRetries} attempts. Password authentication is failing. Please check database credentials.", maxRetries);
-                throw new InvalidOperationException($"Database password authentication failed after {maxRetries} attempts. Please verify database credentials in configuration.", pgEx);
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "❌ Database connection attempt {Attempt}/{MaxRetries} failed: {ExceptionType} - {Message}", 
-                retryCount + 1, maxRetries, ex.GetType().Name, ex.Message);
-            
-            // Log inner exception details if present
-            if (ex.InnerException != null)
-            {
-                logger.LogError(ex.InnerException, "Inner exception: {InnerExceptionType} - {InnerMessage}", 
-                    ex.InnerException.GetType().Name, ex.InnerException.Message);
-            }
-            
-            // Log connection string (mask password)
-            var connStr = builder.Configuration.GetConnectionString("DefaultConnection") ?? "Not found";
-            var maskedConnStr = connStr.Contains("Password=") 
-                ? System.Text.RegularExpressions.Regex.Replace(connStr, @"Password=[^;]+", "Password=***") 
-                : connStr;
-            logger.LogError("Connection string being used: {ConnectionString}", maskedConnStr);
-            
-            if (retryCount >= maxRetries - 1)
-            {
-                logger.LogCritical(ex, "FATAL: Failed to connect to database after {MaxRetries} attempts. Last error: {ExceptionType} - {Message}", 
-                    maxRetries, ex.GetType().Name, ex.Message);
-                throw;
-            }
-        }
-        
-        retryCount++;
-        if (!connectionValid)
-        {
-            await Task.Delay(TimeSpan.FromSeconds(5));
-        }
-    }
-    
-    if (!connectionValid)
-    {
-        throw new InvalidOperationException($"Failed to establish database connection after {maxRetries} attempts");
-    }
     
     // Apply migrations
     try

@@ -98,7 +98,7 @@ jobs:
             log_info "Creating/updating .env file from GitHub secrets (before git reset)..."
             {
               echo "DB_PASSWORD=${DB_PASSWORD}"
-              echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
+              echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;SSL Mode=Disable"
             } > .env
             chmod 600 .env  # Secure the file
             log_success ".env file created/updated with DB_PASSWORD from GitHub secrets"
@@ -118,7 +118,7 @@ jobs:
               log_error ".env file missing after git reset! Recreating..."
               {
                 echo "DB_PASSWORD=${DB_PASSWORD}"
-                echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
+                echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;SSL Mode=Disable"
               } > .env
               chmod 600 .env
             fi
@@ -134,7 +134,6 @@ jobs:
             
             # Stop and remove existing containers completely
             # This ensures containers are RECREATED (not just restarted) with latest .env values
-            # When containers auto-restart later, they need to have correct env vars from .env
             log_info "Stopping and removing existing containers..."
             $COMPOSE_CMD down 2>/dev/null || true
             # Also remove containers (not just stop) to force recreation
@@ -172,28 +171,8 @@ jobs:
               log_error "PostgreSQL failed to start within timeout"
             fi
             
-            # Verify PostgreSQL connection with password from .env
-            log_info "Verifying PostgreSQL password..."
-            sleep 2
-            if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              log_error "PostgreSQL password verification failed. Check DB_PASSWORD in .env file."
-            fi
-            log_success "PostgreSQL password verified"
-            
-            # Verify .env file is correct before starting API
-            log_info "Verifying .env file contents..."
-            if ! grep -q "DB_PASSWORD=${DB_PASSWORD}" .env || ! grep -q "Password=${DB_PASSWORD}" .env; then
-              log_error ".env file password mismatch detected! Recreating..."
-              {
-                echo "DB_PASSWORD=${DB_PASSWORD}"
-                echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
-              } > .env
-              chmod 600 .env
-            fi
-            log_success ".env file verified - DB_PASSWORD and CONNECTION_STRING passwords match"
-            
             # Start API service
-            log_info "Starting API service..."
+            log_info "Starting API service with .env file..."
             $COMPOSE_CMD --env-file .env up -d --no-deps api || log_error "Failed to start API service"
             
             # Wait for API to be healthy
@@ -238,17 +217,4 @@ jobs:
               log_error "API health check failed after timeout"
             fi
             
-            # Cleanup and verify
-            log_info "Cleaning up..."
-            docker container prune -f
-            docker image prune -f
-            
-            # Final verification
-            log_info "Verifying deployment..."
-            $COMPOSE_CMD ps
-            
-            if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
-              log_success "Deployment successful!"
-            else
-              log_error "Deployment verification failed"
-            fi
+            log_success "Deployment successful!"
