@@ -132,11 +132,9 @@ jobs:
             log_info "Building Docker image..."
             $COMPOSE_CMD build api || log_error "Docker build failed"
             
-            # Stop and remove existing containers and volumes completely
-            # This ensures PostgreSQL is recreated with password from .env
-            # PostgreSQL only uses POSTGRES_PASSWORD during initial creation, so volume must be removed
-            log_info "Stopping containers and removing volumes..."
-            $COMPOSE_CMD down -v 2>/dev/null || true
+            # Stop containers (keep volumes to preserve data)
+            log_info "Stopping containers..."
+            $COMPOSE_CMD down 2>/dev/null || true
             
             # Start PostgreSQL with health check
             log_info "Starting PostgreSQL..."
@@ -161,11 +159,28 @@ jobs:
               log_error "PostgreSQL failed to start within timeout"
             fi
             
-            # Verify PostgreSQL password matches .env
-            log_info "Verifying PostgreSQL password from .env..."
+            # Update PostgreSQL password if it doesn't match .env
+            # PostgreSQL only uses POSTGRES_PASSWORD during initial creation, so we update it directly
+            log_info "Checking PostgreSQL password..."
             sleep 2
             if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              log_error "PostgreSQL password mismatch! Database expects different password than .env file."
+              log_info "PostgreSQL password doesn't match .env. Updating password..."
+              # Try with default password first, then update
+              if $COMPOSE_CMD exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${DB_PASSWORD}';" 2>/dev/null; then
+                log_success "PostgreSQL password updated successfully"
+              else
+                # If that fails, volume might be corrupted - log error but continue
+                log_error "Failed to update PostgreSQL password. Database might need volume recreation."
+              fi
+            else
+              log_success "PostgreSQL password already matches .env file"
+            fi
+            
+            # Verify PostgreSQL password matches .env after update
+            log_info "Verifying PostgreSQL password..."
+            sleep 1
+            if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+              log_error "PostgreSQL password verification failed after update. Check database configuration."
             fi
             log_success "PostgreSQL password verified - matches .env file"
             
@@ -177,9 +192,13 @@ jobs:
             fi
             log_success ".env CONNECTION_STRING password verified"
             
-            # Start API service
+            # Remove API container to ensure fresh start with correct environment variables
+            log_info "Removing API container to ensure fresh environment..."
+            $COMPOSE_CMD rm -f api 2>/dev/null || true
+            
+            # Start API service with fresh container and correct .env
             log_info "Starting API service with .env file..."
-            $COMPOSE_CMD --env-file .env up -d --no-deps api || log_error "Failed to start API service"
+            $COMPOSE_CMD --env-file .env up -d --no-deps --force-recreate api || log_error "Failed to start API service"
             
             # Verify API container has correct connection string environment variable
             log_info "Verifying API container connection string environment variable..."
