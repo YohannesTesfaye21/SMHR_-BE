@@ -89,9 +89,7 @@ jobs:
             # Create/update .env file on server - MUST be in same directory as docker-compose.yml
             # This file will persist on the server and be used by docker-compose
             echo "Creating/updating .env file on server..."
-            cat > .env << EOF
-DB_PASSWORD=$DB_PASSWORD
-EOF
+            echo "DB_PASSWORD=$DB_PASSWORD" > .env
             echo "✅ Created .env file"
             echo "Current directory: $(pwd)"
             echo ".env file location: $(pwd)/.env"
