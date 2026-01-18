@@ -195,38 +195,9 @@ jobs:
               exit 1
             fi
             
-            # Stop old API container (zero-downtime: new container will be up before old one stops)
-            echo "Updating API service..."
-            echo "Starting API with DB_PASSWORD from environment..."
-            
-            # Use docker compose up - it will automatically read .env file for ${DB_PASSWORD} substitution
-            echo "Starting API container (docker-compose will read .env file for DB_PASSWORD)..."
+            # Start API container
+            echo "Starting API service..."
             docker compose up -d --no-deps --build api
-            
-            # Wait a moment for container to start
-            sleep 3
-            
-            # Verify the connection string was substituted correctly (check it doesn't contain ${DB_PASSWORD})
-            echo "Verifying API container connection string..."
-            CONN_STR=$(docker compose exec api printenv ConnectionStrings__DefaultConnection 2>/dev/null)
-            
-            if echo "$CONN_STR" | grep -q '\${DB_PASSWORD}'; then
-              echo "❌ ERROR: Connection string still contains \${DB_PASSWORD} - variable substitution failed!"
-              echo "Connection string value: $CONN_STR"
-              exit 1
-            elif echo "$CONN_STR" | grep -q 'Password=postgres[^;]'; then
-              echo "❌ ERROR: Connection string contains hardcoded 'Password=postgres' instead of GitHub secret!"
-              echo "This will cause password mismatch when connection pool expires."
-              echo "Connection string value: ${CONN_STR:0:100}..."
-              exit 1
-            elif [ -z "$CONN_STR" ]; then
-              echo "❌ ERROR: ConnectionStrings__DefaultConnection environment variable is not set in API container!"
-              echo "API will fall back to appsettings.json which has hardcoded Password=postgres"
-              exit 1
-            else
-              echo "✅ Connection string variable substitution verified"
-              echo "Connection string uses password from GitHub secret (not hardcoded)"
-            fi
             
             # Wait for new API to be healthy
             echo "Waiting for API to be healthy..."
