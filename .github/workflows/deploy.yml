@@ -170,8 +170,18 @@ jobs:
             # Wait for new API to be healthy
             echo "Waiting for API to be healthy..."
             timeout 60 bash -c 'until curl -f http://localhost:8080/api/health > /dev/null 2>&1; do sleep 2; done' || {
-              echo "API health check failed, checking logs..."
-              docker compose logs api --tail=50
+              echo "❌ API health check failed, checking logs..."
+              echo "=== Full API Logs (last 100 lines) ==="
+              docker compose logs api --tail=100
+              echo ""
+              echo "=== Checking container status ==="
+              docker compose ps
+              echo ""
+              echo "=== Checking if API can reach PostgreSQL ==="
+              docker compose exec api ping -c 2 postgres 2>&1 || echo "Cannot ping postgres container"
+              echo ""
+              echo "=== Checking PostgreSQL is accessible ==="
+              docker compose exec api nc -zv postgres 5432 2>&1 || echo "Cannot connect to postgres:5432"
               exit 1
             }
             

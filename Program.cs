@@ -259,11 +259,27 @@ using (var scope = app.Services.CreateScope())
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "Database connection attempt {Attempt}/{MaxRetries} failed: {Message}", retryCount + 1, maxRetries, ex.Message);
+            logger.LogError(ex, "❌ Database connection attempt {Attempt}/{MaxRetries} failed: {ExceptionType} - {Message}", 
+                retryCount + 1, maxRetries, ex.GetType().Name, ex.Message);
+            
+            // Log inner exception details if present
+            if (ex.InnerException != null)
+            {
+                logger.LogError(ex.InnerException, "Inner exception: {InnerExceptionType} - {InnerMessage}", 
+                    ex.InnerException.GetType().Name, ex.InnerException.Message);
+            }
+            
+            // Log connection string (mask password)
+            var connStr = builder.Configuration.GetConnectionString("DefaultConnection") ?? "Not found";
+            var maskedConnStr = connStr.Contains("Password=") 
+                ? System.Text.RegularExpressions.Regex.Replace(connStr, @"Password=[^;]+", "Password=***") 
+                : connStr;
+            logger.LogError("Connection string being used: {ConnectionString}", maskedConnStr);
             
             if (retryCount >= maxRetries - 1)
             {
-                logger.LogError(ex, "Failed to connect to database after {MaxRetries} attempts", maxRetries);
+                logger.LogCritical(ex, "FATAL: Failed to connect to database after {MaxRetries} attempts. Last error: {ExceptionType} - {Message}", 
+                    maxRetries, ex.GetType().Name, ex.Message);
                 throw;
             }
         }
