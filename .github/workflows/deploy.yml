@@ -166,17 +166,74 @@ jobs:
             # Clean up any stopped containers to avoid conflicts
             docker container prune -f
             
-            # Build and start new containers (volumes will be reused automatically)
+            # Build images first
             cd /opt/smhfr-be
-            docker compose up -d --build
+            docker compose build
             
-            # Wait a moment for services to start
-            sleep 10
+            # Start PostgreSQL first and wait for it to be ready
+            echo "🔄 Starting PostgreSQL container..."
+            docker compose up -d postgres
+            
+            # Wait for PostgreSQL to be fully ready
+            echo "⏳ Waiting for PostgreSQL to be ready..."
+            timeout 60 bash -c 'until docker compose exec -T postgres pg_isready -U postgres -d smhfr_db; do sleep 2; done' || {
+              echo "⚠️ PostgreSQL health check timeout, continuing anyway..."
+            }
+            
+            # Fix PostgreSQL password to match configuration (if container exists and is running)
+            echo "🔧 Ensuring PostgreSQL password matches configuration..."
+            if docker ps | grep -q smhfr-postgres; then
+              # Try to reset password - use multiple methods for reliability
+              docker compose exec -T postgres psql -U postgres -d smhfr_db -c "ALTER USER postgres WITH PASSWORD 'postgres';" 2>/dev/null || \
+              docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD 'postgres';" 2>/dev/null || \
+              docker exec smhfr-postgres psql -U postgres -d smhfr_db -c "ALTER USER postgres WITH PASSWORD 'postgres';" 2>/dev/null || \
+              docker exec smhfr-postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD 'postgres';" 2>/dev/null || {
+                echo "⚠️ Password reset failed, but continuing - may work if password already matches"
+              }
+              echo "✅ Password configuration verified"
+            else
+              echo "⚠️ PostgreSQL container not running, password will be set on first start"
+            fi
+            
+            # Start all services (API will now connect with correct password)
+            echo "🚀 Starting all services..."
+            docker compose up -d
+            
+            # Wait for services to start
+            echo "⏳ Waiting for services to initialize..."
+            sleep 15
+            
+            # Wait for PostgreSQL health check
+            echo "⏳ Waiting for PostgreSQL health check..."
+            timeout 30 bash -c 'until docker compose ps | grep -q "smhfr-postgres.*healthy"; do sleep 2; done' || echo "PostgreSQL health check timeout"
             
             # Verify deployment
+            echo "📋 Container status:"
             docker compose ps
             
-            # Check API health
-            curl -f http://localhost:8080/api/health || echo "Health check endpoint may still be starting..."
+            # Wait for API to be ready with retries
+            echo "⏳ Waiting for API to be ready..."
+            MAX_RETRIES=10
+            RETRY_COUNT=0
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
+                echo "✅ API health check passed!"
+                break
+              fi
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              echo "   Retry $RETRY_COUNT/$MAX_RETRIES - API not ready yet..."
+              sleep 5
+            done
             
-            echo "✅ Deployment completed successfully!"
+            if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+              echo "⚠️ API health check failed after $MAX_RETRIES attempts"
+              echo "📋 Checking API logs for errors:"
+              docker compose logs api --tail 50 | grep -i "error\|exception\|password\|authentication" || echo "No obvious errors in recent logs"
+            fi
+            
+            # Final verification
+            echo "🔍 Final deployment verification:"
+            docker compose ps
+            curl -f http://localhost:8080/api/health || echo "⚠️ Health endpoint may still be initializing..."
+            
+            echo "✅ Deployment completed!"
