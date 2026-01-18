@@ -79,6 +79,11 @@ jobs:
             # Set database password from GitHub secret or use default
             export DB_PASSWORD="${DB_PASSWORD:-postgres}"
             echo "Using DB_PASSWORD from environment (from GitHub secret)"
+            echo "DB_PASSWORD value is set (length: ${#DB_PASSWORD} characters)"
+            
+            # Create .env file for docker-compose to use
+            echo "DB_PASSWORD=$DB_PASSWORD" > .env
+            echo "Created .env file with DB_PASSWORD"
             
             # Build new image
             echo "Building Docker image..."
@@ -86,7 +91,7 @@ jobs:
             
             # Start PostgreSQL first (preserves data)
             echo "Ensuring PostgreSQL is running..."
-            docker compose up -d postgres
+            DB_PASSWORD="$DB_PASSWORD" docker compose up -d postgres
             
             # Wait for PostgreSQL to be healthy
             echo "Waiting for PostgreSQL..."
@@ -138,7 +143,12 @@ jobs:
             
             # Stop old API container (zero-downtime: new container will be up before old one stops)
             echo "Updating API service..."
-            docker compose up -d --no-deps --build api
+            echo "Starting API with DB_PASSWORD from environment..."
+            DB_PASSWORD="$DB_PASSWORD" docker compose up -d --no-deps --build api
+            
+            # Verify the connection string was substituted correctly
+            echo "Verifying API container environment..."
+            docker compose exec api printenv | grep -i "ConnectionStrings" || echo "Connection string not found in environment"
             
             # Wait for new API to be healthy
             echo "Waiting for API to be healthy..."
