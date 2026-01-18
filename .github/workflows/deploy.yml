@@ -112,11 +112,14 @@ jobs:
             log_success ".env file validated"
             
             # Extract DB_PASSWORD from .env file safely (without sourcing)
-            # This avoids issues with special characters in connection strings
+            # This is only needed for password verification step
+            # The .env file on the server is used as-is by docker compose
             DB_PASSWORD=$(grep "^DB_PASSWORD=" .env | cut -d'=' -f2- | tr -d '\r\n' || echo "")
             if [ -z "$DB_PASSWORD" ]; then
               log_error "Failed to extract DB_PASSWORD from .env file"
             fi
+            
+            log_info "Using existing .env file from server (will not modify it)"
             
             # Build Docker image with cache
             log_info "Building Docker image..."
