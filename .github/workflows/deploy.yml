@@ -111,22 +111,63 @@ jobs:
             echo "Building Docker image..."
             docker compose build --no-cache api
             
-            # Stop containers and remove volume to ensure fresh start with correct password
-            echo "Stopping containers and removing volume..."
+            # Stop containers
+            echo "Stopping containers..."
             docker compose down 2>/dev/null || true
+            
+            # Check if volume exists and verify password
             POSTGRES_VOLUME=$(docker volume ls -q | grep -E "(postgres_data|smhfr.*postgres)" | head -1 || echo "")
+            VOLUME_NEEDS_REMOVAL=false
+            
             if [ -n "$POSTGRES_VOLUME" ]; then
-              docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
+              echo "Found existing PostgreSQL volume: $POSTGRES_VOLUME"
+              echo "Starting PostgreSQL to verify password..."
+              
+              # Start PostgreSQL temporarily to check password
+              docker compose --env-file .env up -d postgres
+              sleep 5
+              
+              # Wait for PostgreSQL to be ready
+              for i in {1..20}; do
+                if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                  break
+                fi
+                if [ $i -eq 20 ]; then
+                  echo "⚠️  PostgreSQL not ready, will recreate volume"
+                  docker compose down postgres 2>/dev/null || true
+                  VOLUME_NEEDS_REMOVAL=true
+                  break
+                fi
+                sleep 1
+              done
+              
+              # Check if password matches
+              if [ "$VOLUME_NEEDS_REMOVAL" = false ]; then
+                if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+                  echo "✅ Existing volume password matches - keeping volume"
+                  docker compose down postgres 2>/dev/null || true
+                else
+                  echo "❌ Existing volume password does NOT match - removing volume"
+                  docker compose down postgres 2>/dev/null || true
+                  VOLUME_NEEDS_REMOVAL=true
+                fi
+              fi
+              
+              # Remove volume if password doesn't match
+              if [ "$VOLUME_NEEDS_REMOVAL" = true ]; then
+                echo "Removing volume to recreate with correct password..."
+                docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
+              fi
+            else
+              echo "No existing volume found - will create new one"
             fi
             
             # Start PostgreSQL with correct password from .env file
             echo "Starting PostgreSQL with .env file..."
-            # Ensure .env file exists and is readable
             if [ ! -f .env ]; then
               echo "❌ ERROR: .env file not found!"
               exit 1
             fi
-            # Use --env-file to explicitly load .env file
             docker compose --env-file .env up -d postgres
             
             # Wait for PostgreSQL to be ready
@@ -192,22 +233,46 @@ jobs:
             echo "=== Container Status ==="
             docker compose ps
             
-            # Wait for API to be healthy
+            # Wait for API to be healthy - give it time for migrations and startup
             echo "Waiting for API to be healthy..."
-            sleep 10
-            for i in {1..60}; do
-              if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
-                echo "✅ API is healthy"
-                break
-              fi
-              if [ $i -eq 60 ]; then
-                echo "❌ API health check failed after 2 minutes"
-                echo "=== API Logs (last 100 lines) ==="
-                docker compose logs api --tail=100
+            echo "This may take a while as the API runs database migrations on startup..."
+            sleep 15  # Give API time to start and begin migrations
+            
+            for i in {1..90}; do
+              # Check if API container is still running
+              API_STATUS=$(docker compose ps api --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "not_running")
+              if [ "$API_STATUS" = "exited" ] || [ "$API_STATUS" = "dead" ]; then
+                echo "❌ API container has stopped/crashed!"
+                echo "=== API Logs (last 150 lines) ==="
+                docker compose logs api --tail=150
                 echo "=== Container Status ==="
                 docker compose ps
                 exit 1
               fi
+              
+              # Try health check
+              if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
+                echo "✅ API is healthy"
+                break
+              fi
+              
+              if [ $i -eq 90 ]; then
+                echo "❌ API health check failed after 3 minutes"
+                echo "=== API Logs (last 150 lines) ==="
+                docker compose logs api --tail=150
+                echo "=== Container Status ==="
+                docker compose ps
+                echo "=== Checking if API is listening on port 8080 ==="
+                docker compose exec -T api netstat -tlnp 2>/dev/null | grep 8080 || echo "Port 8080 not listening"
+                exit 1
+              fi
+              
+              # Show progress every 10 attempts
+              if [ $((i % 10)) -eq 0 ]; then
+                echo "   Still waiting... (attempt $i/90, checking API logs...)"
+                docker compose logs api --tail=20 | tail -5
+              fi
+              
               sleep 2
             done
             
