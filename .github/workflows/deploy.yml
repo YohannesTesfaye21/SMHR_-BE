@@ -151,12 +151,24 @@ jobs:
             
             # Verify PostgreSQL password matches DB_PASSWORD
             echo "Verifying PostgreSQL password..."
+            sleep 2  # Give PostgreSQL a moment to fully start
             if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
               echo "✅ PostgreSQL password matches DB_PASSWORD"
             else
               echo "❌ CRITICAL: PostgreSQL password does NOT match DB_PASSWORD!"
-              echo "   This means the database was initialized with a different password"
-              docker compose logs postgres --tail=50
+              echo "   Testing with different passwords to find what works..."
+              # Try common passwords
+              for TEST_PASS in "postgres" ""; do
+                if [ -n "$TEST_PASS" ]; then
+                  if docker compose exec -T -e PGPASSWORD="$TEST_PASS" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+                    echo "   ⚠️  Database password is actually: $TEST_PASS"
+                    echo "   This means POSTGRES_PASSWORD was not set correctly during initialization"
+                    break
+                  fi
+                fi
+              done
+              echo "   DB_PASSWORD length: ${#DB_PASSWORD} characters"
+              docker compose logs postgres --tail=50 | grep -i password || echo "No password-related logs"
               exit 1
             fi
             
@@ -181,22 +193,40 @@ jobs:
             # Use --env-file to explicitly load .env file
             docker compose --env-file .env up -d --no-deps --build api
             
-            # Verify connection string in API container
-            sleep 3
+            # Verify connection string in API container and test actual connection
+            sleep 5  # Give API more time to start
             echo "Verifying connection string in API container..."
             API_CONN_STR=$(docker compose exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
             if [ -n "$API_CONN_STR" ]; then
-              if echo "$API_CONN_STR" | grep -q "Password=$DB_PASSWORD"; then
+              # Extract password from connection string
+              CONN_PASSWORD=$(echo "$API_CONN_STR" | sed -n 's/.*Password=\([^;]*\).*/\1/p')
+              if [ "$CONN_PASSWORD" = "$DB_PASSWORD" ]; then
                 echo "✅ Connection string in API container has correct password"
+                echo "   Password length: ${#CONN_PASSWORD} characters"
               else
                 echo "❌ CRITICAL: Connection string password does NOT match!"
-                echo "   Connection string: ${API_CONN_STR/Password=*/Password=***}"
-                echo "   Expected password length: ${#DB_PASSWORD}"
+                echo "   Connection string password: ${CONN_PASSWORD:0:5}*** (length: ${#CONN_PASSWORD})"
+                echo "   DB_PASSWORD: ${DB_PASSWORD:0:5}*** (length: ${#DB_PASSWORD})"
+                echo "   Full connection string: $API_CONN_STR"
                 exit 1
               fi
             else
-              echo "❌ CRITICAL: Connection string not found in API container!"
+              echo "❌ CRITICAL: Connection string not found in API container environment!"
+              echo "   API may be using appsettings.json instead"
+              echo "   Checking what connection string API is actually using..."
+              docker compose exec -T api cat appsettings.json 2>/dev/null | grep -A 3 ConnectionStrings || echo "Could not read appsettings.json"
               exit 1
+            fi
+            
+            # Test actual connection from API container to PostgreSQL
+            echo "Testing database connection from API container perspective..."
+            # Try to connect using the same method the API uses
+            TEST_RESULT=$(docker compose exec -T api sh -c "export PGPASSWORD='$DB_PASSWORD' && timeout 3 psql -h postgres -U postgres -d smhfr_db -c 'SELECT 1;' 2>&1" || echo "FAILED")
+            if echo "$TEST_RESULT" | grep -q "SELECT 1"; then
+              echo "✅ Direct connection test from API container succeeded"
+            else
+              echo "⚠️  Direct connection test failed (psql may not be installed in API container)"
+              echo "   Test result: $TEST_RESULT"
             fi
             
             # Check container status first
