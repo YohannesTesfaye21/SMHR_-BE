@@ -125,8 +125,16 @@ jobs:
             log_info "Stopping existing containers..."
             $COMPOSE_CMD down 2>/dev/null || true
             
+            # Remove PostgreSQL volume if it exists (to ensure password matches)
+            # This prevents password mismatch when .env password changes
+            POSTGRES_VOLUME=$(docker volume ls -q | grep -E "(postgres_data|smhfr.*postgres)" | head -1 || echo "")
+            if [ -n "$POSTGRES_VOLUME" ]; then
+              log_info "Removing existing PostgreSQL volume to ensure password match..."
+              docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
+            fi
+            
             # Start PostgreSQL with health check
-            log_info "Starting PostgreSQL..."
+            log_info "Starting PostgreSQL with new password..."
             $COMPOSE_CMD --env-file .env up -d postgres || log_error "Failed to start PostgreSQL"
             
             # Wait for PostgreSQL to be ready
