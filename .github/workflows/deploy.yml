@@ -103,18 +103,65 @@ jobs:
             echo "Building Docker image..."
             docker compose build --no-cache api
             
-            # Start PostgreSQL (reads .env file for POSTGRES_PASSWORD=${DB_PASSWORD})
-            echo "Starting PostgreSQL with .env file..."
-            # DB_PASSWORD is already exported above
+            # Ensure database volume has correct password BEFORE starting
+            # Stop any existing PostgreSQL container
+            echo "Stopping any existing PostgreSQL container..."
+            docker compose down postgres 2>/dev/null || true
+            sleep 2
+            
+            # Check if volume exists and verify password
+            POSTGRES_VOLUME=$(docker volume ls -q | grep -E "(postgres_data|smhfr.*postgres)" | head -1 || echo "")
+            VOLUME_NEEDS_RECREATION=false
+            
+            if [ -n "$POSTGRES_VOLUME" ]; then
+              echo "Found existing PostgreSQL volume: $POSTGRES_VOLUME"
+              echo "Verifying if password matches DB_PASSWORD..."
+              
+              # Start PostgreSQL temporarily to check password
+              docker compose --env-file .env up -d postgres
+              sleep 5
+              
+              # Wait for PostgreSQL to be ready
+              for i in {1..20}; do
+                if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                  break
+                fi
+                if [ $i -eq 20 ]; then
+                  echo "⚠️  PostgreSQL not ready, will recreate volume"
+                  docker compose down postgres 2>/dev/null || true
+                  VOLUME_NEEDS_RECREATION=true
+                  break
+                fi
+                sleep 1
+              done
+              
+              # Try to verify password matches
+              if [ "$VOLUME_NEEDS_RECREATION" = false ]; then
+                if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+                  echo "✅ Existing volume password matches DB_PASSWORD - keeping volume"
+                  docker compose down postgres 2>/dev/null || true
+                else
+                  echo "❌ Existing volume password does NOT match DB_PASSWORD"
+                  echo "   Removing volume to recreate with correct password..."
+                  docker compose down postgres 2>/dev/null || true
+                  docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
+                  VOLUME_NEEDS_RECREATION=true
+                fi
+              fi
+            else
+              echo "No existing PostgreSQL volume found - will create new one"
+            fi
+            
+            # Start PostgreSQL - it will initialize with correct password from POSTGRES_PASSWORD
+            echo "Starting PostgreSQL with correct password from .env file..."
             docker compose --env-file .env up -d postgres
             
             # Wait for PostgreSQL to be healthy
             echo "Waiting for PostgreSQL to be ready..."
             sleep 5
             for i in {1..30}; do
-              STATUS=$(docker compose ps postgres --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "")
-              if echo "$STATUS" | grep -q "running\|healthy"; then
-                echo "✅ PostgreSQL is running"
+              if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                echo "✅ PostgreSQL is ready"
                 break
               fi
               if [ $i -eq 30 ]; then
@@ -127,58 +174,15 @@ jobs:
               sleep 2
             done
             
-            # Reset PostgreSQL password to match GitHub secret (handles existing volumes with different password)
-            echo "Resetting PostgreSQL password to match GitHub secret..."
-            # Try multiple methods to reset password, handling cases where volume has old password
-            PASSWORD_RESET=false
-            # Method 1: Try with new password (if volume was just created or already has this password)
-            if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null; then
-              echo "✅ Password reset using new password"
-              PASSWORD_RESET=true
-            # Method 2: Try with common default password 'postgres'
-            elif docker compose exec -T -e PGPASSWORD="postgres" postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null; then
-              echo "✅ Password reset using default 'postgres' password"
-              PASSWORD_RESET=true
-            # Method 3: Try without password (trust authentication - only works if pg_hba.conf allows it)
-            elif docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null; then
-              echo "✅ Password reset using trust authentication"
-              PASSWORD_RESET=true
-            fi
-            
-            if [ "$PASSWORD_RESET" = false ]; then
-              echo "⚠️  Could not reset password automatically. The database volume may have been initialized with a different password."
-              echo "   Attempting to recreate the database volume..."
-              # Stop containers
-              docker compose down postgres api 2>/dev/null || true
-              # Remove the volume to start fresh
-              docker volume rm smhfr-be_postgres_data 2>/dev/null || docker volume rm $(docker volume ls -q | grep postgres_data) 2>/dev/null || echo "Volume not found or already removed"
-              # Start PostgreSQL again with the correct password
-              echo "Starting PostgreSQL with fresh volume and correct password..."
-              docker compose --env-file .env up -d postgres
-              # Wait for PostgreSQL to be ready
-              sleep 5
-              for i in {1..30}; do
-                if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                  echo "✅ PostgreSQL is ready with new password"
-                  break
-                fi
-                if [ $i -eq 30 ]; then
-                  echo "❌ PostgreSQL failed to start after volume recreation"
-                  docker compose logs postgres --tail=50
-                  exit 1
-                fi
-                sleep 2
-              done
-            fi
-            
-            # Verify password was set correctly
-            echo "Verifying password reset..."
+            # Verify password is correct (database was initialized with POSTGRES_PASSWORD from .env)
+            echo "Verifying database password matches DB_PASSWORD..."
             if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              echo "✅ Password verification successful"
+              echo "✅ Password verification successful - database initialized with correct password"
             else
-              echo "❌ Password verification failed. This is a critical error."
-              echo "   Connection string password: ${DB_PASSWORD:0:2}*** (hidden)"
-              echo "   Database password may not match. Check logs above."
+              echo "❌ CRITICAL: Password verification failed!"
+              echo "   This should not happen if volume was created correctly"
+              echo "   DB_PASSWORD length: ${#DB_PASSWORD} characters"
+              docker compose logs postgres --tail=50
               exit 1
             fi
             sleep 2
