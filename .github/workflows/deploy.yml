@@ -86,7 +86,24 @@ jobs:
             mkdir -p "$APP_DIR"
             cd "$APP_DIR" || log_error "Failed to change to $APP_DIR"
             
-            # Clone or update repository
+            # Get DB_PASSWORD from environment variable passed from GitHub secrets FIRST
+            # This must be done before git reset to preserve it
+            DB_PASSWORD="${DB_PASSWORD_SECRET:-}"
+            if [ -z "$DB_PASSWORD" ]; then
+              log_error "DB_PASSWORD_SECRET not provided! Please set DB_PASSWORD in GitHub secrets."
+            fi
+            
+            # Create/update .env file BEFORE git reset to ensure it persists
+            # .env is in .gitignore, so git reset won't delete it, but we recreate it anyway
+            log_info "Creating/updating .env file from GitHub secrets (before git reset)..."
+            {
+              echo "DB_PASSWORD=${DB_PASSWORD}"
+              echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
+            } > .env
+            chmod 600 .env  # Secure the file
+            log_success ".env file created/updated with DB_PASSWORD from GitHub secrets"
+            
+            # Clone or update repository (AFTER .env is created)
             if [ -d ".git" ]; then
               log_info "Updating repository..."
               git fetch origin
@@ -96,26 +113,20 @@ jobs:
               git clone "$REPO_URL" . || log_error "Failed to clone repository"
             fi
             
+            # Verify .env file still exists after git reset (it should, since it's in .gitignore)
+            if [ ! -f ".env" ]; then
+              log_error ".env file missing after git reset! Recreating..."
+              {
+                echo "DB_PASSWORD=${DB_PASSWORD}"
+                echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
+              } > .env
+              chmod 600 .env
+            fi
+            
             # Verify docker-compose.yml exists
             if [ ! -f "docker-compose.yml" ]; then
               log_error "docker-compose.yml not found!"
             fi
-            
-            # Get DB_PASSWORD from environment variable passed from GitHub secrets
-            DB_PASSWORD="${DB_PASSWORD_SECRET:-}"
-            if [ -z "$DB_PASSWORD" ]; then
-              log_error "DB_PASSWORD_SECRET not provided! Please set DB_PASSWORD in GitHub secrets."
-            fi
-            
-            # Create/update .env file with DB_PASSWORD and CONNECTION_STRING
-            # This persists on server so containers can restart and still use it
-            log_info "Creating/updating .env file from GitHub secrets..."
-            {
-              echo "DB_PASSWORD=${DB_PASSWORD}"
-              echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
-            } > .env
-            chmod 600 .env  # Secure the file
-            log_success ".env file created/updated with DB_PASSWORD from GitHub secrets"
             
             # Build Docker image with cache
             log_info "Building Docker image..."
