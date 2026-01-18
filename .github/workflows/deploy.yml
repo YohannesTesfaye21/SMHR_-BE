@@ -33,13 +33,13 @@ jobs:
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
+        env:
+          DB_PASSWORD_SECRET: ${{ secrets.DB_PASSWORD }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-        env:
-          DB_PASSWORD_SECRET: ${{ secrets.DB_PASSWORD }}
-        script: |
+          script: |
             set -euo pipefail
             
             APP_DIR="/opt/smhfr-be"
