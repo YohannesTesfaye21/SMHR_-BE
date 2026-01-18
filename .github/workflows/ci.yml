@@ -56,9 +56,14 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Create .env file for docker-compose
+        run: |
+          cat > .env << EOF
+          DB_PASSWORD=${{ env.DB_PASSWORD }}
+          CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ env.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable
+          EOF
+
       - name: Start PostgreSQL
-        env:
-          DB_PASSWORD: ${{ env.DB_PASSWORD }}
         run: |
           docker compose up -d postgres
 
@@ -89,9 +94,6 @@ jobs:
           dotnet ef database update --project SMHFR_BE.csproj
 
       - name: Start API service
-        env:
-          DB_PASSWORD: ${{ env.DB_PASSWORD }}
-          CONNECTION_STRING: Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ env.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable
         run: |
           docker compose up -d api
           docker compose ps
