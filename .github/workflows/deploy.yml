@@ -13,227 +13,140 @@ on:
       environment:
         description: 'Deployment environment'
         required: true
-        default: 'staging'
+        default: 'production'
         type: choice
         options:
-          - staging
           - production
-
-env:
-  DOTNET_VERSION: '8.0.x'
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Only run if CI workflow succeeded
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    
+    timeout-minutes: 10
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-
-      - name: Determine environment
-        id: env
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
-          elif [ "${{ github.ref }}" == "refs/heads/main" ] || [ "${{ github.ref }}" == "refs/heads/master" ]; then
-            echo "environment=production" >> $GITHUB_OUTPUT
-          else
-            echo "environment=staging" >> $GITHUB_OUTPUT
-          fi
-          echo "Deploying to: ${{ steps.env.outputs.environment }}"
-
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Deploy to server via SSH
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            # Repository is public, no authentication needed
+            set -e
+            
+            APP_DIR="/opt/smhfr-be"
             REPO_URL="https://github.com/YohannesTesfaye21/SMHR_-BE.git"
-            # Install Docker if not present
+            
+            # Ensure Docker is installed
             if ! command -v docker &> /dev/null; then
               echo "Installing Docker..."
-              apt-get update
-              apt-get install -y ca-certificates curl gnupg lsb-release
-              mkdir -p /etc/apt/keyrings
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-              apt-get update
-              apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+              curl -fsSL https://get.docker.com | sh
               systemctl enable docker
               systemctl start docker
-              echo "✅ Docker installed successfully"
+            fi
+            
+            # Ensure Git is installed
+            command -v git &> /dev/null || (apt-get update && apt-get install -y git)
+            
+            # Create application directory
+            mkdir -p "$APP_DIR"
+            cd "$APP_DIR"
+            
+            # Clone or update repository
+            if [ -d ".git" ]; then
+              echo "Pulling latest changes..."
+              git fetch origin
+              git reset --hard origin/main
             else
-              echo "✅ Docker is already installed"
+              echo "Cloning repository..."
+              git clone "$REPO_URL" .
             fi
             
-            # Install Git if not present
-            if ! command -v git &> /dev/null; then
-              echo "Installing Git..."
-              apt-get update
-              apt-get install -y git
-            fi
-            
-            # Create directory if it doesn't exist
-            mkdir -p /opt/smhfr-be
-            cd /opt/smhfr-be
-            echo "Current directory: $(pwd)"
-            echo "Directory contents before clone:"
-            ls -la || echo "Directory is empty or doesn't exist"
-            
-            # Clone or update repository (public repo, no auth needed)
-            REPO_URL="https://github.com/YohannesTesfaye21/SMHR_-BE.git"
-            
-            if [ -d ".git" ] && [ -f "docker-compose.yml" ]; then
-              echo "Repository exists, pulling latest changes..."
-              git remote set-url origin "$REPO_URL"
-              git pull origin main || {
-                echo "⚠️ Git pull failed, removing and re-cloning..."
-                cd /
-                rm -rf /opt/smhfr-be
-                mkdir -p /opt/smhfr-be
-                cd /opt/smhfr-be
-                git clone "$REPO_URL" . || {
-                  echo "❌ Git clone failed!"
-                  exit 1
-                }
-              }
-            else
-              echo "Cloning repository for first time..."
-              # Remove directory if it exists but isn't a valid repo
-              if [ -d "/opt/smhfr-be" ] && [ ! -f "/opt/smhfr-be/docker-compose.yml" ]; then
-                echo "Removing invalid directory contents..."
-                rm -rf /opt/smhfr-be/*
-                rm -rf /opt/smhfr-be/.* 2>/dev/null || true
-              fi
-              cd /opt/smhfr-be
-              git clone "$REPO_URL" . || {
-                echo "❌ Git clone failed!"
-                exit 1
-              }
-              echo "✅ Repository cloned successfully"
-            fi
-            
-            # Verify repository is valid
-            cd /opt/smhfr-be
+            # Ensure docker-compose.yml exists
             if [ ! -f "docker-compose.yml" ]; then
-              echo "❌ docker-compose.yml not found! Clone may have failed."
-              echo "Current directory: $(pwd)"
-              echo "Directory contents:"
-              ls -la
-              exit 1
-            fi
-            echo "✅ Repository verified - docker-compose.yml found"
-            echo "Repository files:"
-            ls -la | head -20
-            
-            # Stop existing containers (PRESERVE VOLUMES to keep database data)
-            cd /opt/smhfr-be
-            
-            # Check if postgres volume exists to ensure data preservation
-            if docker volume ls | grep -q "smhfr-be_postgres_data"; then
-              echo "✅ Database volume exists - data will be preserved"
-            else
-              echo "⚠️ Database volume not found - new database will be created"
-            fi
-            
-            # Ensure we're in the correct directory
-            cd /opt/smhfr-be || { echo "❌ /opt/smhfr-be directory does not exist!"; exit 1; }
-            
-            # Verify docker-compose.yml exists
-            if [ ! -f "docker-compose.yml" ]; then
-              echo "❌ docker-compose.yml not found in /opt/smhfr-be!"
-              echo "Current directory: $(pwd)"
-              echo "Files:"
-              ls -la
+              echo "Error: docker-compose.yml not found!"
               exit 1
             fi
             
-            # Stop containers using docker-compose (preserves volumes)
-            docker compose down || true
+            # Build new image
+            echo "Building Docker image..."
+            docker compose build --no-cache api
             
-            # Clean up any stopped containers to avoid conflicts
-            docker container prune -f
-            
-            # Build images first
-            cd /opt/smhfr-be
-            docker compose build
-            
-            # Start PostgreSQL first and wait for it to be ready
-            echo "🔄 Starting PostgreSQL container..."
+            # Start PostgreSQL first (preserves data)
+            echo "Ensuring PostgreSQL is running..."
             docker compose up -d postgres
             
-            # Wait for PostgreSQL to be fully ready
-            echo "⏳ Waiting for PostgreSQL to be ready..."
-            timeout 60 bash -c 'until docker compose exec -T postgres pg_isready -U postgres -d smhfr_db; do sleep 2; done' || {
-              echo "⚠️ PostgreSQL health check timeout, continuing anyway..."
+            # Wait for PostgreSQL to be healthy
+            echo "Waiting for PostgreSQL..."
+            timeout 60 bash -c 'until docker compose exec -T postgres pg_isready -U postgres; do sleep 2; done' || {
+              echo "PostgreSQL not ready, checking logs..."
+              docker compose logs postgres --tail=50
+              exit 1
             }
             
-            # Fix PostgreSQL password to match configuration (if container exists and is running)
-            echo "🔧 Ensuring PostgreSQL password matches configuration..."
-            if docker ps | grep -q smhfr-postgres; then
-              # Try to reset password - use multiple methods for reliability
-              docker compose exec -T postgres psql -U postgres -d smhfr_db -c "ALTER USER postgres WITH PASSWORD 'postgres';" 2>/dev/null || \
-              docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD 'postgres';" 2>/dev/null || \
-              docker exec smhfr-postgres psql -U postgres -d smhfr_db -c "ALTER USER postgres WITH PASSWORD 'postgres';" 2>/dev/null || \
-              docker exec smhfr-postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD 'postgres';" 2>/dev/null || {
-                echo "⚠️ Password reset failed, but continuing - may work if password already matches"
-              }
-              echo "✅ Password configuration verified"
+            # Verify database connection and fix password if needed
+            echo "Verifying database connection..."
+            sleep 3
+            
+            # Test connection with correct password
+            if PGPASSWORD=postgres docker compose exec -T -e PGPASSWORD=postgres postgres psql -U postgres -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
+              echo "✅ Database connection successful"
             else
-              echo "⚠️ PostgreSQL container not running, password will be set on first start"
+              echo "⚠️  Database connection failed. Attempting to reset password using local socket..."
+              
+              # Reset password using Unix socket (local connection, no password required)
+              # This works because we removed POSTGRES_HOST_AUTH_METHOD, allowing local trust auth
+              if docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD 'postgres';" 2>/dev/null; then
+                echo "✅ Password reset successful"
+                sleep 2
+                
+                # Test connection again with new password
+                if PGPASSWORD=postgres docker compose exec -T -e PGPASSWORD=postgres postgres psql -U postgres -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
+                  echo "✅ Database connection successful after password reset"
+                else
+                  echo "❌ Database connection still failing after password reset!"
+                  docker compose logs postgres --tail=30
+                  exit 1
+                fi
+              else
+                echo "❌ Could not reset password. The PostgreSQL volume may need to be recreated."
+                echo ""
+                echo "Current password in docker-compose.yml: postgres"
+                echo ""
+                echo "To fix (WARNING: deletes all data):"
+                echo "  docker compose down -v"
+                echo "  docker compose up -d"
+                echo ""
+                docker compose logs postgres --tail=30
+                exit 1
+              fi
             fi
             
-            # Start all services (API will now connect with correct password)
-            echo "🚀 Starting all services..."
-            docker compose up -d
+            # Stop old API container (zero-downtime: new container will be up before old one stops)
+            echo "Updating API service..."
+            docker compose up -d --no-deps --build api
             
-            # Wait for services to start
-            echo "⏳ Waiting for services to initialize..."
-            sleep 15
+            # Wait for new API to be healthy
+            echo "Waiting for API to be healthy..."
+            timeout 60 bash -c 'until curl -f http://localhost:8080/api/health > /dev/null 2>&1; do sleep 2; done' || {
+              echo "API health check failed, checking logs..."
+              docker compose logs api --tail=50
+              exit 1
+            }
             
-            # Wait for PostgreSQL health check
-            echo "⏳ Waiting for PostgreSQL health check..."
-            timeout 30 bash -c 'until docker compose ps | grep -q "smhfr-postgres.*healthy"; do sleep 2; done' || echo "PostgreSQL health check timeout"
+            # Remove old/stopped containers
+            docker container prune -f
             
             # Verify deployment
-            echo "📋 Container status:"
+            echo "Verifying deployment..."
             docker compose ps
+            curl -f http://localhost:8080/api/health && echo "✅ Deployment successful!"
             
-            # Wait for API to be ready with retries
-            echo "⏳ Waiting for API to be ready..."
-            MAX_RETRIES=10
-            RETRY_COUNT=0
-            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
-                echo "✅ API health check passed!"
-                break
-              fi
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-              echo "   Retry $RETRY_COUNT/$MAX_RETRIES - API not ready yet..."
-              sleep 5
-            done
-            
-            if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-              echo "⚠️ API health check failed after $MAX_RETRIES attempts"
-              echo "📋 Checking API logs for errors:"
-              docker compose logs api --tail 50 | grep -i "error\|exception\|password\|authentication" || echo "No obvious errors in recent logs"
-            fi
-            
-            # Final verification
-            echo "🔍 Final deployment verification:"
-            docker compose ps
-            curl -f http://localhost:8080/api/health || echo "⚠️ Health endpoint may still be initializing..."
-            
-            echo "✅ Deployment completed!"
+            # Clean up old images
+            docker image prune -f

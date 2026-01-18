@@ -14,10 +14,12 @@ on:
 
 env:
   DOTNET_VERSION: '8.0.x'
+  POSTGRES_PASSWORD: postgres
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -37,15 +39,20 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Docker Compose services
-        run: |
-          docker compose -f docker-compose.yml build
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: smhfr-api:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Start PostgreSQL only
+      - name: Start PostgreSQL
         run: |
           docker compose -f docker-compose.yml up -d postgres
 
-      - name: Wait for PostgreSQL to be ready
+      - name: Wait for PostgreSQL
         run: |
           echo "Waiting for PostgreSQL to be ready..."
           timeout 60 bash -c 'until docker compose -f docker-compose.yml exec -T postgres pg_isready -U postgres; do sleep 2; done'
@@ -55,45 +62,42 @@ jobs:
         with:
           path: ~/.dotnet/tools
           key: ${{ runner.os }}-dotnet-tools-ef
+          restore-keys: |
+            ${{ runner.os }}-dotnet-tools-ef-
 
-      - name: Install EF Core tools
+      - name: Setup EF Core tools
         run: |
-          if ! dotnet tool list -g | grep -q dotnet-ef; then
+          if ! command -v dotnet-ef &> /dev/null; then
             dotnet tool install --global dotnet-ef
           fi
           echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-      - name: Run database migrations
+      - name: Run migrations
         env:
-          ConnectionStrings__DefaultConnection: Host=localhost;Port=5432;Database=smhfr_db;Username=postgres;Password=postgres
+          ConnectionStrings__DefaultConnection: Host=localhost;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ env.POSTGRES_PASSWORD }}
         run: |
-          dotnet restore SMHFR_BE.csproj
           dotnet ef database update --project SMHFR_BE.csproj
 
-      - name: Start all Docker Compose services
+      - name: Start API service
         run: |
-          docker compose -f docker-compose.yml up -d
+          docker compose -f docker-compose.yml up -d api
+          docker compose -f docker-compose.yml ps
 
-      - name: Wait for API to be healthy
+      - name: Wait for API health
         run: |
-          echo "Waiting for API to start..."
-          timeout 120 bash -c 'until curl -f http://localhost:8080/api/health 2>/dev/null || curl -f http://localhost:8080/swagger/index.html 2>/dev/null; do echo "Waiting..."; sleep 3; done' || echo "API started (health check may not be available)"
+          timeout 60 bash -c 'until curl -f http://localhost:8080/api/health 2>/dev/null; do sleep 2; done'
 
-      - name: Check API health
+      - name: Verify deployment
         run: |
-          echo "Checking API health..."
-          curl -f http://localhost:8080/api/health || echo "Health check endpoint not available, but checking Swagger..."
-          curl -f http://localhost:8080/swagger/index.html && echo "API is running successfully!" || echo "API may still be starting..."
+          echo "✅ API is healthy"
+          curl -s http://localhost:8080/api/health | jq '.' || echo "Health check response received"
 
-      - name: View service logs
+      - name: View logs on failure
         if: failure()
         run: |
-          echo "=== API Logs ==="
-          docker compose -f docker-compose.yml logs api
-          echo "=== PostgreSQL Logs ==="
-          docker compose -f docker-compose.yml logs postgres
+          docker compose -f docker-compose.yml logs --tail=100
 
-      - name: Stop Docker Compose services
+      - name: Cleanup
         if: always()
         run: |
           docker compose -f docker-compose.yml down -v
