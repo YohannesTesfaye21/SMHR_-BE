@@ -37,6 +37,8 @@ public class HealthFacilitiesController : ControllerBase
     /// <param name="districtId">Filter by district ID</param>
     /// <param name="ownership">Filter by ownership</param>
     /// <param name="operationalStatus">Filter by operational status</param>
+    /// <param name="sortBy">Sort by field: "name", "createdAt", "updatedAt", "hcprojectenddate", "damalcaafimaadprojectenddate", "betterlifeprojectenddate", "caafimaadplusprojectenddate", or "id" (default: "id")</param>
+    /// <param name="sortOrder">Sort order: "asc" or "desc" (default: "asc")</param>
     /// <param name="pageNumber">Page number (default: 1)</param>
     /// <param name="pageSize">Number of items per page (default: 50, max: 100)</param>
     [HttpGet]
@@ -49,6 +51,8 @@ public class HealthFacilitiesController : ControllerBase
         [FromQuery] int? districtId = null,
         [FromQuery] string? ownership = null,
         [FromQuery] string? operationalStatus = null,
+        [FromQuery] string sortBy = "id",
+        [FromQuery] string sortOrder = "asc",
         [FromQuery] int pageNumber = 1,
         [FromQuery] int pageSize = 50)
     {
@@ -97,12 +101,44 @@ public class HealthFacilitiesController : ControllerBase
             if (!string.IsNullOrWhiteSpace(operationalStatus))
                 query = query.Where(hf => hf.OperationalStatus == operationalStatus.Trim());
 
+            // Apply sorting
+            sortBy = sortBy?.Trim().ToLower() ?? "id";
+            sortOrder = sortOrder?.Trim().ToLower() ?? "asc";
+            bool isDescending = sortOrder == "desc";
+
+            query = sortBy switch
+            {
+                "name" => isDescending 
+                    ? query.OrderByDescending(hf => hf.HealthFacilityName)
+                    : query.OrderBy(hf => hf.HealthFacilityName),
+                "createdat" => isDescending
+                    ? query.OrderByDescending(hf => hf.CreatedAt)
+                    : query.OrderBy(hf => hf.CreatedAt),
+                "updatedat" => isDescending
+                    ? query.OrderByDescending(hf => hf.UpdatedAt)
+                    : query.OrderBy(hf => hf.UpdatedAt),
+                "hcprojectenddate" => isDescending
+                    ? query.OrderByDescending(hf => hf.HCProjectEndDate ?? DateTime.MinValue)
+                    : query.OrderBy(hf => hf.HCProjectEndDate ?? DateTime.MaxValue),
+                "damalcaafimaadprojectenddate" => isDescending
+                    ? query.OrderByDescending(hf => hf.DamalCaafimaadProjectEndDate ?? DateTime.MinValue)
+                    : query.OrderBy(hf => hf.DamalCaafimaadProjectEndDate ?? DateTime.MaxValue),
+                "betterlifeprojectenddate" => isDescending
+                    ? query.OrderByDescending(hf => hf.BetterLifeProjectEndDate ?? DateTime.MinValue)
+                    : query.OrderBy(hf => hf.BetterLifeProjectEndDate ?? DateTime.MaxValue),
+                "caafimaadplusprojectenddate" => isDescending
+                    ? query.OrderByDescending(hf => hf.CaafimaadPlusProjectEndDate ?? DateTime.MinValue)
+                    : query.OrderBy(hf => hf.CaafimaadPlusProjectEndDate ?? DateTime.MaxValue),
+                "id" or _ => isDescending
+                    ? query.OrderByDescending(hf => hf.HealthFacilityId)
+                    : query.OrderBy(hf => hf.HealthFacilityId)
+            };
+
             // Get total count before pagination
             var totalCount = await query.CountAsync();
 
             // Apply pagination
             var facilities = await query
-                .OrderBy(hf => hf.HealthFacilityId)
                 .Skip((pageNumber - 1) * pageSize)
                 .Take(pageSize)
                 .ToListAsync();
