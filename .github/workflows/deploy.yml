@@ -85,6 +85,10 @@ jobs:
             echo "DB_PASSWORD=$DB_PASSWORD" > .env
             echo "Created .env file with DB_PASSWORD"
             
+            # Also set the connection string directly as environment variable for API
+            # Docker Compose may not substitute variables inside environment variable values
+            export CONNECTION_STRING="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=$DB_PASSWORD;Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
+            
             # Build new image
             echo "Building Docker image..."
             docker compose build --no-cache api
@@ -144,11 +148,24 @@ jobs:
             # Stop old API container (zero-downtime: new container will be up before old one stops)
             echo "Updating API service..."
             echo "Starting API with DB_PASSWORD from environment..."
+            
+            # Use docker compose up with environment variable override
+            # Docker Compose will read .env file and substitute ${DB_PASSWORD}
             DB_PASSWORD="$DB_PASSWORD" docker compose up -d --no-deps --build api
             
-            # Verify the connection string was substituted correctly
-            echo "Verifying API container environment..."
-            docker compose exec api printenv | grep -i "ConnectionStrings" || echo "Connection string not found in environment"
+            # Wait a moment for container to start
+            sleep 3
+            
+            # Verify the connection string was substituted correctly (check it doesn't contain ${DB_PASSWORD})
+            echo "Verifying API container connection string..."
+            if docker compose exec api printenv ConnectionStrings__DefaultConnection 2>/dev/null | grep -q '\${DB_PASSWORD}'; then
+              echo "❌ ERROR: Connection string still contains \${DB_PASSWORD} - variable substitution failed!"
+              echo "Connection string value:"
+              docker compose exec api printenv ConnectionStrings__DefaultConnection
+              exit 1
+            else
+              echo "✅ Connection string variable substitution verified"
+            fi
             
             # Wait for new API to be healthy
             echo "Waiting for API to be healthy..."
