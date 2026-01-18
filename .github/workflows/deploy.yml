@@ -125,16 +125,36 @@ jobs:
             log_info "Stopping existing containers..."
             $COMPOSE_CMD down 2>/dev/null || true
             
-            # Remove PostgreSQL volume if it exists (to ensure password matches)
-            # This prevents password mismatch when .env password changes
+            # Check if PostgreSQL volume exists and verify password matches
+            # Only remove if password doesn't match (preserves data when password is correct)
             POSTGRES_VOLUME=$(docker volume ls -q | grep -E "(postgres_data|smhfr.*postgres)" | head -1 || echo "")
             if [ -n "$POSTGRES_VOLUME" ]; then
-              log_info "Removing existing PostgreSQL volume to ensure password match..."
-              docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
+              log_info "Checking if existing PostgreSQL volume password matches..."
+              # Start PostgreSQL temporarily to check password
+              $COMPOSE_CMD --env-file .env up -d postgres 2>/dev/null || true
+              sleep 5
+              
+              # Wait for PostgreSQL to be ready
+              for i in {1..10}; do
+                if $COMPOSE_CMD exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                  break
+                fi
+                sleep 1
+              done
+              
+              # Test password match
+              if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+                log_info "Existing volume password does NOT match - removing volume..."
+                $COMPOSE_CMD down postgres 2>/dev/null || true
+                docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
+              else
+                log_success "Existing volume password matches - keeping volume (preserves data)"
+                $COMPOSE_CMD down postgres 2>/dev/null || true
+              fi
             fi
             
             # Start PostgreSQL with health check
-            log_info "Starting PostgreSQL with new password..."
+            log_info "Starting PostgreSQL..."
             $COMPOSE_CMD --env-file .env up -d postgres || log_error "Failed to start PostgreSQL"
             
             # Wait for PostgreSQL to be ready
