@@ -58,10 +58,27 @@ builder.Services.AddSwaggerGen(c =>
 // Configure PostgreSQL connection
 // Priority: Environment variable > appsettings.json
 // Environment variable format: ConnectionStrings__DefaultConnection (double underscore for nested config)
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+// CRITICAL: Always prefer environment variable to prevent using hardcoded password from appsettings.json
+var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection");
+
 if (string.IsNullOrWhiteSpace(connectionString))
 {
-    throw new InvalidOperationException("Connection string 'DefaultConnection' not found. Ensure ConnectionStrings__DefaultConnection environment variable is set.");
+    // Fall back to configuration (appsettings.json) only if environment variable is not set
+    connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+    
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        throw new InvalidOperationException("Connection string 'DefaultConnection' not found. Ensure ConnectionStrings__DefaultConnection environment variable is set.");
+    }
+    
+    // Warn if using hardcoded password from appsettings.json in Docker/production
+    if (connectionString.Contains("Password=postgres") && 
+        (builder.Environment.IsProduction() || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"))))
+    {
+        Console.WriteLine("WARNING: Using connection string from appsettings.json with hardcoded Password=postgres");
+        Console.WriteLine("WARNING: This may cause password authentication errors when connection pool expires!");
+        Console.WriteLine("WARNING: Set ConnectionStrings__DefaultConnection environment variable to use GitHub secret password.");
+    }
 }
 
 // Enhance connection string with better connection management settings
