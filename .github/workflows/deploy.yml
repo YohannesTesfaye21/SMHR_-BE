@@ -33,6 +33,8 @@ jobs:
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.0
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD || 'postgres' }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
@@ -74,6 +76,10 @@ jobs:
               exit 1
             fi
             
+            # Set database password from GitHub secret or use default
+            export DB_PASSWORD="${DB_PASSWORD:-postgres}"
+            echo "Using DB_PASSWORD from environment (from GitHub secret)"
+            
             # Build new image
             echo "Building Docker image..."
             docker compose build --no-cache api
@@ -94,34 +100,36 @@ jobs:
             echo "Verifying database connection..."
             sleep 3
             
-            # Test connection with correct password
-            if PGPASSWORD=postgres docker compose exec -T -e PGPASSWORD=postgres postgres psql -U postgres -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
-              echo "✅ Database connection successful"
+            # Test connection with password from GitHub secret
+            if PGPASSWORD="$DB_PASSWORD" docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
+              echo "✅ Database connection successful with password from GitHub secret"
             else
               echo "⚠️  Database connection failed. Attempting to reset password using local socket..."
+              echo "DB_PASSWORD from GitHub secret is being used"
               
               # Reset password using Unix socket (local connection, no password required)
               # This works because we removed POSTGRES_HOST_AUTH_METHOD, allowing local trust auth
-              if docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD 'postgres';" 2>/dev/null; then
-                echo "✅ Password reset successful"
+              if docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null; then
+                echo "✅ Password reset successful to value from GitHub secret"
                 sleep 2
                 
                 # Test connection again with new password
-                if PGPASSWORD=postgres docker compose exec -T -e PGPASSWORD=postgres postgres psql -U postgres -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
+                if PGPASSWORD="$DB_PASSWORD" docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
                   echo "✅ Database connection successful after password reset"
                 else
                   echo "❌ Database connection still failing after password reset!"
+                  echo "DB_PASSWORD from secret might be incorrect or PostgreSQL volume has different password"
                   docker compose logs postgres --tail=30
                   exit 1
                 fi
               else
                 echo "❌ Could not reset password. The PostgreSQL volume may need to be recreated."
                 echo ""
-                echo "Current password in docker-compose.yml: postgres"
+                echo "DB_PASSWORD from GitHub secret is being used"
                 echo ""
                 echo "To fix (WARNING: deletes all data):"
                 echo "  docker compose down -v"
-                echo "  docker compose up -d"
+                echo "  DB_PASSWORD='$DB_PASSWORD' docker compose up -d"
                 echo ""
                 docker compose logs postgres --tail=30
                 exit 1

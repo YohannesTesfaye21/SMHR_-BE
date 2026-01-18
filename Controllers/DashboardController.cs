@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SMHFR_BE.Data;
 using SMHFR_BE.DTOs;
+using Npgsql;
 
 namespace SMHFR_BE.Controllers;
 
@@ -43,10 +44,42 @@ public class DashboardController : ControllerBase
 
             return Ok(ApiResponse<CardDataDTO>.SuccessResult(cardData, "Card statistics retrieved successfully"));
         }
+        catch (Npgsql.PostgresException pgEx) when (pgEx.SqlState == "28P01")
+        {
+            _logger.LogError(pgEx, "❌ Database password authentication failed in GetCardStatistics");
+            _logger.LogError("Connection string used: {ConnectionString}", _context.Database.GetConnectionString());
+            
+            // Clear connection pool to force new connections
+            try
+            {
+                Npgsql.NpgsqlConnection.ClearAllPools();
+                _logger.LogInformation("Cleared Npgsql connection pool after authentication failure");
+            }
+            catch (Exception clearEx)
+            {
+                _logger.LogError(clearEx, "Failed to clear connection pool");
+            }
+            
+            return StatusCode(500, ApiResponse<CardDataDTO>.ErrorResult(
+                "Database authentication failed. Please check database credentials.",
+                new List<string> 
+                { 
+                    "28P01: password authentication failed for user \"postgres\"",
+                    $"Connection string: {_context.Database.GetConnectionString()?.Replace("Password=postgres", "Password=***")}"
+                }));
+        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error retrieving card statistics");
-            return StatusCode(500, ApiResponse<CardDataDTO>.ErrorResult("An error occurred while retrieving card statistics", new List<string> { ex.Message }));
+            _logger.LogError(ex, "Error retrieving card statistics: {ExceptionType} - {Message}", ex.GetType().Name, ex.Message);
+            
+            // Include inner exception details if present
+            var errorMessages = new List<string> { ex.Message };
+            if (ex.InnerException != null)
+            {
+                errorMessages.Add($"Inner exception: {ex.InnerException.Message}");
+            }
+            
+            return StatusCode(500, ApiResponse<CardDataDTO>.ErrorResult("An error occurred while retrieving card statistics", errorMessages));
         }
     }
 

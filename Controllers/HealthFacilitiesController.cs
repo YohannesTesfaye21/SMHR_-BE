@@ -5,6 +5,7 @@ using SMHFR_BE.Data;
 using SMHFR_BE.DTOs;
 using SMHFR_BE.Models;
 using SMHFR_BE.Services;
+using Npgsql;
 
 namespace SMHFR_BE.Controllers;
 
@@ -112,10 +113,42 @@ public class HealthFacilitiesController : ControllerBase
             
             return Ok(ApiPagedResponse<HealthFacilityDTO>.SuccessResult(pagedResponse, "Health facilities retrieved successfully"));
         }
+        catch (Npgsql.PostgresException pgEx) when (pgEx.SqlState == "28P01")
+        {
+            _logger.LogError(pgEx, "❌ Database password authentication failed in GetHealthFacilities");
+            _logger.LogError("Connection string used: {ConnectionString}", _context.Database.GetConnectionString()?.Replace("Password=postgres", "Password=***"));
+            
+            // Clear connection pool to force new connections
+            try
+            {
+                Npgsql.NpgsqlConnection.ClearAllPools();
+                _logger.LogInformation("Cleared Npgsql connection pool after authentication failure in GetHealthFacilities");
+            }
+            catch (Exception clearEx)
+            {
+                _logger.LogError(clearEx, "Failed to clear connection pool");
+            }
+            
+            return StatusCode(500, ApiPagedResponse<HealthFacilityDTO>.ErrorResult(
+                "Database authentication failed. Please check database credentials.",
+                new List<string> 
+                { 
+                    "28P01: password authentication failed for user \"postgres\"",
+                    "This error occurs when the PostgreSQL password in docker-compose.yml doesn't match the password stored in the database volume."
+                }));
+        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error retrieving health facilities");
-            return StatusCode(500, ApiPagedResponse<HealthFacilityDTO>.ErrorResult("An error occurred while retrieving health facilities", new List<string> { ex.Message }));
+            _logger.LogError(ex, "Error retrieving health facilities: {ExceptionType} - {Message}", ex.GetType().Name, ex.Message);
+            
+            // Include inner exception details if present
+            var errorMessages = new List<string> { ex.Message };
+            if (ex.InnerException != null)
+            {
+                errorMessages.Add($"Inner exception: {ex.InnerException.Message}");
+            }
+            
+            return StatusCode(500, ApiPagedResponse<HealthFacilityDTO>.ErrorResult("An error occurred while retrieving health facilities", errorMessages));
         }
     }
 
