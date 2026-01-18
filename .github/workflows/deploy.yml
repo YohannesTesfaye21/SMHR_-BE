@@ -132,9 +132,13 @@ jobs:
             log_info "Building Docker image..."
             $COMPOSE_CMD build api || log_error "Docker build failed"
             
-            # Stop existing containers
-            log_info "Stopping existing containers..."
+            # Stop and remove existing containers completely
+            # This ensures containers are RECREATED (not just restarted) with latest .env values
+            # When containers auto-restart later, they need to have correct env vars from .env
+            log_info "Stopping and removing existing containers..."
             $COMPOSE_CMD down 2>/dev/null || true
+            # Also remove containers (not just stop) to force recreation
+            $COMPOSE_CMD rm -f postgres api 2>/dev/null || true
             
             # Remove PostgreSQL volume to ensure password matches .env
             # This ensures PostgreSQL always uses password from .env (from GitHub secrets)
