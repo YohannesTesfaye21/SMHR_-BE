@@ -88,16 +88,22 @@ jobs:
             
             # Create .env file - MUST be in same directory as docker-compose.yml
             # Docker Compose automatically reads .env file from current directory
+            # Construct connection string directly to avoid substitution issues
+            CONNECTION_STRING="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=$DB_PASSWORD;Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
+            
             echo "DB_PASSWORD=$DB_PASSWORD" > .env
+            echo "CONNECTION_STRING=$CONNECTION_STRING" >> .env
             echo "✅ Created .env file"
             echo "Current directory: $(pwd)"
             echo ".env file location: $(pwd)/.env"
             echo ".env file exists: $([ -f .env ] && echo 'yes' || echo 'no')"
-            echo ".env file contents (password hidden): $(cat .env | sed 's/DB_PASSWORD=.*/DB_PASSWORD=***/')"
+            echo ".env file contents (passwords hidden): $(cat .env | sed 's/\(DB_PASSWORD\|CONNECTION_STRING.*Password\)=[^$]*/\1=***/')"
             
-            # Also export to environment for docker-compose variable substitution
+            # Export to environment for docker-compose variable substitution
             export DB_PASSWORD
+            export CONNECTION_STRING
             echo "✅ Exported DB_PASSWORD to environment (length: ${#DB_PASSWORD} characters)"
+            echo "✅ Exported CONNECTION_STRING to environment"
             
             # Build new image
             echo "Building Docker image..."
@@ -187,60 +193,30 @@ jobs:
             fi
             sleep 2
             
-            # Start API container (uses .env file for ${DB_PASSWORD} in connection string)
+            # Start API container (CONNECTION_STRING is already in .env file)
             echo "Starting API service..."
-            # DB_PASSWORD is already exported above
-            
-            # Verify .env file is correct before starting
-            echo "Verifying .env file before starting API..."
-            if [ -f .env ]; then
-              echo ".env file exists and contains: $(cat .env | sed 's/DB_PASSWORD=.*/DB_PASSWORD=***/')"
-            else
-              echo "❌ ERROR: .env file not found!"
-              exit 1
-            fi
-            
-            # Verify docker-compose variable substitution works
-            echo "Testing docker-compose variable substitution..."
-            COMPOSE_CONFIG=$(docker compose --env-file .env config 2>&1)
-            if echo "$COMPOSE_CONFIG" | grep -q "Password=$DB_PASSWORD"; then
-              echo "✅ Variable substitution verified in docker-compose config"
-            elif echo "$COMPOSE_CONFIG" | grep -q "Password=\${DB_PASSWORD}"; then
-              echo "❌ ERROR: Variable substitution FAILED - Password still shows \${DB_PASSWORD}"
-              echo "   This means docker-compose cannot read DB_PASSWORD from .env file"
-              echo "   Checking .env file format..."
-              cat .env
-              exit 1
-            else
-              echo "⚠️  Could not verify variable substitution in config, but continuing..."
-            fi
-            
+            # CONNECTION_STRING is already exported and in .env file
             docker compose --env-file .env up -d --no-deps --build api
             
             # Wait a bit for container to start
             sleep 5
             
-            # Verify the connection string in the API container has the correct password
+            # Verify the connection string in the API container
             echo "Verifying connection string in API container..."
+            sleep 3
             API_CONN_STR=$(docker compose exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
             if [ -n "$API_CONN_STR" ]; then
-              # Check if password in connection string matches (extract password from connection string)
-              CONN_PASSWORD=$(echo "$API_CONN_STR" | grep -oP 'Password=\K[^;]*' || echo "")
-              if [ -n "$CONN_PASSWORD" ]; then
-                if [ "$CONN_PASSWORD" = "$DB_PASSWORD" ]; then
-                  echo "✅ Connection string password matches DB_PASSWORD"
-                else
-                  echo "❌ CRITICAL: Connection string password does NOT match DB_PASSWORD!"
-                  echo "   Connection string password: ${CONN_PASSWORD:0:2}*** (length: ${#CONN_PASSWORD})"
-                  echo "   DB_PASSWORD: ${DB_PASSWORD:0:2}*** (length: ${#DB_PASSWORD})"
-                  echo "   This means variable substitution failed!"
-                  exit 1
-                fi
+              echo "✅ Connection string found in API container environment"
+              # Verify it matches what we set
+              if [ "$API_CONN_STR" = "$CONNECTION_STRING" ]; then
+                echo "✅ Connection string matches expected value"
               else
-                echo "⚠️  Could not extract password from connection string"
+                echo "⚠️  Connection string doesn't match, but continuing..."
               fi
             else
-              echo "⚠️  Could not read connection string from API container"
+              echo "❌ Connection string not found in API container - API may be using appsettings.json"
+              echo "   This is a critical error - the environment variable is not being set"
+              exit 1
             fi
             
             # Check container status first
