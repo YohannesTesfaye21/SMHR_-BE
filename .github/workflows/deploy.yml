@@ -85,9 +85,16 @@ jobs:
             echo "Using DB_PASSWORD from environment (from GitHub secret)"
             echo "DB_PASSWORD value is set (length: ${#DB_PASSWORD} characters)"
             
-            # Create .env file for docker-compose to use
+            # Create .env file for docker-compose to use (must be in same directory as docker-compose.yml)
             echo "DB_PASSWORD=$DB_PASSWORD" > .env
             echo "Created .env file with DB_PASSWORD"
+            
+            # Verify .env file was created correctly
+            if [ ! -f ".env" ] || ! grep -q "DB_PASSWORD=" .env; then
+              echo "❌ ERROR: Failed to create .env file!"
+              exit 1
+            fi
+            echo "✅ .env file verified: DB_PASSWORD is set"
             
             # Also set the connection string directly as environment variable for API
             # Docker Compose may not substitute variables inside environment variable values
@@ -98,8 +105,23 @@ jobs:
             docker compose build --no-cache api
             
             # Start PostgreSQL first (preserves data)
-            echo "Ensuring PostgreSQL is running..."
-            DB_PASSWORD="$DB_PASSWORD" docker compose up -d postgres
+            # Ensure we're in the directory with docker-compose.yml and .env file
+            echo "Current directory: $(pwd)"
+            echo "Files in directory:"
+            ls -la | head -10
+            
+            echo "Ensuring PostgreSQL is running with DB_PASSWORD from .env file..."
+            # docker-compose automatically reads .env file in the same directory
+            docker compose up -d postgres
+            
+            # Verify PostgreSQL got the password from .env file
+            PG_ENV_PASSWORD=$(docker compose exec -T postgres printenv POSTGRES_PASSWORD 2>/dev/null || echo "")
+            if [ -z "$PG_ENV_PASSWORD" ]; then
+              echo "❌ ERROR: PostgreSQL container doesn't have POSTGRES_PASSWORD set!"
+              echo "This means .env file wasn't read correctly by docker-compose"
+              exit 1
+            fi
+            echo "✅ PostgreSQL container has POSTGRES_PASSWORD set (length: ${#PG_ENV_PASSWORD} characters)"
             
             # Wait for PostgreSQL to be healthy
             echo "Waiting for PostgreSQL..."
@@ -177,22 +199,33 @@ jobs:
             echo "Updating API service..."
             echo "Starting API with DB_PASSWORD from environment..."
             
-            # Use docker compose up with environment variable override
-            # Docker Compose will read .env file and substitute ${DB_PASSWORD}
-            DB_PASSWORD="$DB_PASSWORD" docker compose up -d --no-deps --build api
+            # Use docker compose up - it will automatically read .env file for ${DB_PASSWORD} substitution
+            echo "Starting API container (docker-compose will read .env file for DB_PASSWORD)..."
+            docker compose up -d --no-deps --build api
             
             # Wait a moment for container to start
             sleep 3
             
             # Verify the connection string was substituted correctly (check it doesn't contain ${DB_PASSWORD})
             echo "Verifying API container connection string..."
-            if docker compose exec api printenv ConnectionStrings__DefaultConnection 2>/dev/null | grep -q '\${DB_PASSWORD}'; then
+            CONN_STR=$(docker compose exec api printenv ConnectionStrings__DefaultConnection 2>/dev/null)
+            
+            if echo "$CONN_STR" | grep -q '\${DB_PASSWORD}'; then
               echo "❌ ERROR: Connection string still contains \${DB_PASSWORD} - variable substitution failed!"
-              echo "Connection string value:"
-              docker compose exec api printenv ConnectionStrings__DefaultConnection
+              echo "Connection string value: $CONN_STR"
+              exit 1
+            elif echo "$CONN_STR" | grep -q 'Password=postgres[^;]'; then
+              echo "❌ ERROR: Connection string contains hardcoded 'Password=postgres' instead of GitHub secret!"
+              echo "This will cause password mismatch when connection pool expires."
+              echo "Connection string value: ${CONN_STR:0:100}..."
+              exit 1
+            elif [ -z "$CONN_STR" ]; then
+              echo "❌ ERROR: ConnectionStrings__DefaultConnection environment variable is not set in API container!"
+              echo "API will fall back to appsettings.json which has hardcoded Password=postgres"
               exit 1
             else
               echo "✅ Connection string variable substitution verified"
+              echo "Connection string uses password from GitHub secret (not hardcoded)"
             fi
             
             # Wait for new API to be healthy
