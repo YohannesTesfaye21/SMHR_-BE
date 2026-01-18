@@ -87,21 +87,37 @@ jobs:
             
             # Create .env file - Docker Compose reads this automatically for ${DB_PASSWORD} substitution
             echo "DB_PASSWORD=$DB_PASSWORD" > .env
+            echo "✅ Created .env file with DB_PASSWORD (length: ${#DB_PASSWORD} characters)"
+            
+            # Verify .env file
+            if ! grep -q "DB_PASSWORD=" .env; then
+              echo "❌ ERROR: .env file doesn't contain DB_PASSWORD!"
+              exit 1
+            fi
             
             # Build new image
             echo "Building Docker image..."
             docker compose build --no-cache api
             
-            # Start PostgreSQL
+            # Start PostgreSQL (reads .env file for POSTGRES_PASSWORD=${DB_PASSWORD})
+            echo "Starting PostgreSQL..."
             docker compose up -d postgres
             
-            # Wait for PostgreSQL to be healthy
-            echo "Waiting for PostgreSQL..."
-            timeout 60 bash -c 'until docker compose exec -T postgres pg_isready -U postgres; do sleep 2; done' || {
-              echo "PostgreSQL not ready, checking logs..."
-              docker compose logs postgres --tail=50
-              exit 1
-            }
+            # Wait for PostgreSQL to be healthy (it will retry automatically if restarting)
+            echo "Waiting for PostgreSQL to be ready..."
+            sleep 5
+            for i in {1..30}; do
+              if docker compose ps postgres | grep -q "Up.*healthy"; then
+                echo "✅ PostgreSQL is healthy"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "❌ PostgreSQL failed to become healthy"
+                docker compose logs postgres --tail=50
+                exit 1
+              fi
+              sleep 2
+            done
             
             # Reset PostgreSQL password to match GitHub secret (handles existing volumes with different password)
             echo "Resetting PostgreSQL password to match GitHub secret..."
