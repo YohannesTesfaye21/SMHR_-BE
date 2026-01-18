@@ -72,6 +72,21 @@ public class ApiResponse<T>
             Timestamp = DateTime.UtcNow
         };
     }
+
+    /// <summary>
+    /// Creates a validation error response from ValidationResult
+    /// </summary>
+    public static ApiResponse<T> ValidationErrorResult(ValidationResult validationResult, string message = "Validation failed")
+    {
+        var errors = validationResult.Errors.Select(e => $"{e.Field}: {e.Message}").ToList();
+        return new ApiResponse<T>
+        {
+            Success = false,
+            Message = message,
+            Errors = errors,
+            Timestamp = DateTime.UtcNow
+        };
+    }
 }
 
 /// <summary>
@@ -79,6 +94,21 @@ public class ApiResponse<T>
 /// </summary>
 public class ApiResponse : ApiResponse<object>
 {
+    /// <summary>
+    /// Creates a validation error response from ValidationResult
+    /// </summary>
+    public static new ApiResponse ValidationErrorResult(ValidationResult validationResult, string message = "Validation failed")
+    {
+        var errors = validationResult.Errors.Select(e => $"{e.Field}: {e.Message}").ToList();
+        return new ApiResponse
+        {
+            Success = false,
+            Message = message,
+            Errors = errors,
+            Timestamp = DateTime.UtcNow
+        };
+    }
+
     /// <summary>
     /// Creates a successful response without data
     /// </summary>
