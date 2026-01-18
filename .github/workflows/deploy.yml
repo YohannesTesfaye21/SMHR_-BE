@@ -37,8 +37,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: DB_PASSWORD_SECRET
-        envs:
+        env:
           DB_PASSWORD_SECRET: ${{ secrets.DB_PASSWORD }}
         script: |
             set -euo pipefail
@@ -111,10 +110,10 @@ jobs:
             # Create/update .env file with DB_PASSWORD and CONNECTION_STRING
             # This persists on server so containers can restart and still use it
             log_info "Creating/updating .env file from GitHub secrets..."
-            cat > .env << EOF
-DB_PASSWORD=${DB_PASSWORD}
-CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable
-EOF
+            {
+              echo "DB_PASSWORD=${DB_PASSWORD}"
+              echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
+            } > .env
             chmod 600 .env  # Secure the file
             log_success ".env file created/updated with DB_PASSWORD from GitHub secrets"
             
