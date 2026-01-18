@@ -22,7 +22,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout code
@@ -38,17 +38,43 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            set -e
+            set -euo pipefail
             
             APP_DIR="/opt/smhfr-be"
-            REPO_URL="https://github.com/YohannesTesfaye21/SMHR_-BE.git"
+            REPO_URL="${{ github.repositoryUrl }}"
+            
+            # Helper function for error logging
+            log_error() {
+              echo "❌ ERROR: $1" >&2
+              exit 1
+            }
+            
+            log_info() {
+              echo "ℹ️  $1"
+            }
+            
+            log_success() {
+              echo "✅ $1"
+            }
             
             # Ensure Docker is installed
             if ! command -v docker &> /dev/null; then
-              echo "Installing Docker..."
+              log_info "Installing Docker..."
               curl -fsSL https://get.docker.com | sh
               systemctl enable docker
               systemctl start docker
+            fi
+            
+            # Ensure docker-compose is available
+            if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+              log_info "Installing docker-compose..."
+              apt-get update && apt-get install -y docker-compose-plugin
+            fi
+            
+            # Use 'docker compose' if available, fallback to 'docker-compose'
+            COMPOSE_CMD="docker compose"
+            if ! $COMPOSE_CMD version &> /dev/null; then
+              COMPOSE_CMD="docker-compose"
             fi
             
             # Ensure Git is installed
@@ -56,233 +82,137 @@ jobs:
             
             # Create application directory
             mkdir -p "$APP_DIR"
-            cd "$APP_DIR"
+            cd "$APP_DIR" || log_error "Failed to change to $APP_DIR"
             
             # Clone or update repository
             if [ -d ".git" ]; then
-              echo "Pulling latest changes..."
+              log_info "Updating repository..."
               git fetch origin
-              git reset --hard origin/main
+              git reset --hard origin/main || git reset --hard origin/master
             else
-              echo "Cloning repository..."
-              git clone "$REPO_URL" .
+              log_info "Cloning repository..."
+              git clone "$REPO_URL" . || log_error "Failed to clone repository"
             fi
             
-            # Ensure docker-compose.yml exists
+            # Verify docker-compose.yml exists
             if [ ! -f "docker-compose.yml" ]; then
-              echo "Error: docker-compose.yml not found!"
-              exit 1
+              log_error "docker-compose.yml not found!"
             fi
             
-            # Check if .env file exists on server (should be created manually)
-            echo "Checking for .env file on server..."
-            if [ ! -f .env ]; then
-              echo "❌ ERROR: .env file not found!"
-              echo ""
-              echo "Please create .env file manually on the server with:"
-              echo "  DB_PASSWORD=your_password_here"
-              echo "  CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=your_password_here;Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
-              echo ""
-              echo "Location: $APP_DIR/.env"
-              exit 1
+            # Check .env file exists and contains required variables
+            if [ ! -f ".env" ]; then
+              log_error ".env file not found! Please create it with DB_PASSWORD and CONNECTION_STRING variables."
             fi
             
-            echo "✅ .env file found"
-            echo "Current directory: $(pwd)"
-            echo ".env file location: $(pwd)/.env"
-            
-            # Verify .env file contains required variables
-            echo "Verifying .env file contents..."
-            if grep -q "DB_PASSWORD=" .env && grep -q "CONNECTION_STRING=" .env; then
-              echo "✅ .env file contains DB_PASSWORD and CONNECTION_STRING"
-            else
-              echo "❌ ERROR: .env file is missing required variables!"
-              echo "   Required: DB_PASSWORD and CONNECTION_STRING"
-              exit 1
+            # Verify required variables are present
+            if ! grep -q "DB_PASSWORD=" .env || ! grep -q "CONNECTION_STRING=" .env; then
+              log_error ".env file is missing required variables (DB_PASSWORD and/or CONNECTION_STRING)"
             fi
             
-            # Source .env file to load variables
+            log_success ".env file validated"
+            
+            # Source .env file
             set -a
+            # shellcheck source=/dev/null
             source .env
             set +a
-            echo "✅ Loaded variables from .env file"
             
-            # Build new image
-            echo "Building Docker image..."
-            docker compose build --no-cache api
+            # Build Docker image with cache
+            log_info "Building Docker image..."
+            $COMPOSE_CMD build api || log_error "Docker build failed"
             
-            # Stop containers
-            echo "Stopping containers..."
-            docker compose down 2>/dev/null || true
+            # Stop existing containers
+            log_info "Stopping existing containers..."
+            $COMPOSE_CMD down 2>/dev/null || true
             
-            # Check if volume exists and verify password
-            POSTGRES_VOLUME=$(docker volume ls -q | grep -E "(postgres_data|smhfr.*postgres)" | head -1 || echo "")
-            VOLUME_NEEDS_REMOVAL=false
-            
-            if [ -n "$POSTGRES_VOLUME" ]; then
-              echo "Found existing PostgreSQL volume: $POSTGRES_VOLUME"
-              echo "Starting PostgreSQL to verify password..."
-              
-              # Start PostgreSQL temporarily to check password
-              docker compose --env-file .env up -d postgres
-              sleep 5
-              
-              # Wait for PostgreSQL to be ready
-              for i in {1..20}; do
-                if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                  break
-                fi
-                if [ $i -eq 20 ]; then
-                  echo "⚠️  PostgreSQL not ready, will recreate volume"
-                  docker compose down postgres 2>/dev/null || true
-                  VOLUME_NEEDS_REMOVAL=true
-                  break
-                fi
-                sleep 1
-              done
-              
-              # Check if password matches
-              if [ "$VOLUME_NEEDS_REMOVAL" = false ]; then
-                if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-                  echo "✅ Existing volume password matches - keeping volume"
-                  docker compose down postgres 2>/dev/null || true
-                else
-                  echo "❌ Existing volume password does NOT match - removing volume"
-                  docker compose down postgres 2>/dev/null || true
-                  VOLUME_NEEDS_REMOVAL=true
-                fi
-              fi
-              
-              # Remove volume if password doesn't match
-              if [ "$VOLUME_NEEDS_REMOVAL" = true ]; then
-                echo "Removing volume to recreate with correct password..."
-                docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
-              fi
-            else
-              echo "No existing volume found - will create new one"
-            fi
-            
-            # Start PostgreSQL with correct password from .env file
-            echo "Starting PostgreSQL with .env file..."
-            if [ ! -f .env ]; then
-              echo "❌ ERROR: .env file not found!"
-              exit 1
-            fi
-            docker compose --env-file .env up -d postgres
+            # Start PostgreSQL with health check
+            log_info "Starting PostgreSQL..."
+            $COMPOSE_CMD --env-file .env up -d postgres || log_error "Failed to start PostgreSQL"
             
             # Wait for PostgreSQL to be ready
-            echo "Waiting for PostgreSQL..."
-            for i in {1..30}; do
-              if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                echo "✅ PostgreSQL is ready"
+            log_info "Waiting for PostgreSQL to be ready..."
+            MAX_RETRIES=30
+            RETRY_COUNT=0
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              if $COMPOSE_CMD exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                log_success "PostgreSQL is ready"
                 break
               fi
-              if [ $i -eq 30 ]; then
-                echo "❌ PostgreSQL failed to start"
-                docker compose logs postgres --tail=50
-                exit 1
-              fi
+              RETRY_COUNT=$((RETRY_COUNT + 1))
               sleep 2
             done
             
-            # Verify PostgreSQL password matches DB_PASSWORD from .env
-            echo "Verifying PostgreSQL password..."
+            if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+              echo "PostgreSQL logs:"
+              $COMPOSE_CMD logs postgres --tail=50
+              log_error "PostgreSQL failed to start within timeout"
+            fi
+            
+            # Verify PostgreSQL connection with password from .env
+            log_info "Verifying PostgreSQL password..."
             sleep 2
-            if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              echo "✅ PostgreSQL password matches DB_PASSWORD from .env"
-            else
-              echo "❌ CRITICAL: PostgreSQL password does NOT match DB_PASSWORD from .env!"
-              echo "   Make sure .env file has the correct DB_PASSWORD"
-              docker compose logs postgres --tail=30
-              exit 1
+            if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+              log_error "PostgreSQL password verification failed. Check DB_PASSWORD in .env file."
             fi
+            log_success "PostgreSQL password verified"
             
-            # Start API service with .env file
-            echo "Starting API service with .env file..."
-            # Ensure .env file exists
-            if [ ! -f .env ]; then
-              echo "❌ ERROR: .env file not found!"
-              exit 1
-            fi
+            # Start API service
+            log_info "Starting API service..."
+            $COMPOSE_CMD --env-file .env up -d --no-deps api || log_error "Failed to start API service"
             
-            # Verify docker-compose can read variables from .env
-            echo "Verifying docker-compose can read .env file..."
-            if docker compose --env-file .env config > /dev/null 2>&1; then
-              echo "✅ Docker compose can read .env file"
-            else
-              echo "❌ ERROR: Docker compose cannot read .env file!"
-              exit 1
-            fi
+            # Wait for API to be healthy
+            log_info "Waiting for API to be healthy..."
+            MAX_RETRIES=90
+            RETRY_COUNT=0
+            sleep 10  # Give API initial startup time
             
-            # Use --env-file to explicitly load .env file
-            docker compose --env-file .env up -d --no-deps --build api
-            
-            # Verify connection string in API container
-            sleep 5
-            echo "Verifying connection string in API container..."
-            API_CONN_STR=$(docker compose exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
-            if [ -n "$API_CONN_STR" ]; then
-              echo "✅ Connection string found in API container"
-            else
-              echo "❌ CRITICAL: Connection string not found in API container!"
-              echo "   API may be using appsettings.json instead"
-              exit 1
-            fi
-            
-            # Check container status first
-            echo "=== Container Status ==="
-            docker compose ps
-            
-            # Wait for API to be healthy - give it time for migrations and startup
-            echo "Waiting for API to be healthy..."
-            echo "This may take a while as the API runs database migrations on startup..."
-            sleep 15  # Give API time to start and begin migrations
-            
-            for i in {1..90}; do
-              # Check if API container is still running
-              API_STATUS=$(docker compose ps api --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "not_running")
-              if [ "$API_STATUS" = "exited" ] || [ "$API_STATUS" = "dead" ]; then
-                echo "❌ API container has stopped/crashed!"
-                echo "=== API Logs (last 150 lines) ==="
-                docker compose logs api --tail=150
-                echo "=== Container Status ==="
-                docker compose ps
-                exit 1
+            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+              # Check if container is still running
+              CONTAINER_STATUS=$($COMPOSE_CMD ps api --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+              
+              if [ "$CONTAINER_STATUS" = "exited" ] || [ "$CONTAINER_STATUS" = "dead" ]; then
+                echo "Container status: $CONTAINER_STATUS"
+                echo "=== API Logs (last 100 lines) ==="
+                $COMPOSE_CMD logs api --tail=100
+                log_error "API container stopped unexpectedly"
               fi
               
-              # Try health check
+              # Check health endpoint
               if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
-                echo "✅ API is healthy"
+                log_success "API is healthy"
                 break
               fi
               
-              if [ $i -eq 90 ]; then
-                echo "❌ API health check failed after 3 minutes"
-                echo "=== API Logs (last 150 lines) ==="
-                docker compose logs api --tail=150
-                echo "=== Container Status ==="
-                docker compose ps
-                echo "=== Checking if API is listening on port 8080 ==="
-                docker compose exec -T api netstat -tlnp 2>/dev/null | grep 8080 || echo "Port 8080 not listening"
-                exit 1
-              fi
+              RETRY_COUNT=$((RETRY_COUNT + 1))
               
-              # Show progress every 10 attempts
-              if [ $((i % 10)) -eq 0 ]; then
-                echo "   Still waiting... (attempt $i/90, checking API logs...)"
-                docker compose logs api --tail=20 | tail -5
+              # Show progress every 15 attempts
+              if [ $((RETRY_COUNT % 15)) -eq 0 ]; then
+                log_info "Still waiting... (attempt $RETRY_COUNT/$MAX_RETRIES)"
+                $COMPOSE_CMD logs api --tail=10
               fi
               
               sleep 2
             done
             
-            # Remove old/stopped containers
+            if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+              echo "=== API Logs (last 150 lines) ==="
+              $COMPOSE_CMD logs api --tail=150
+              echo "=== Container Status ==="
+              $COMPOSE_CMD ps
+              log_error "API health check failed after timeout"
+            fi
+            
+            # Cleanup and verify
+            log_info "Cleaning up..."
             docker container prune -f
-            
-            # Verify deployment
-            echo "Verifying deployment..."
-            docker compose ps
-            curl -f http://localhost:8080/api/health && echo "✅ Deployment successful!"
-            
-            # Clean up old images
             docker image prune -f
+            
+            # Final verification
+            log_info "Verifying deployment..."
+            $COMPOSE_CMD ps
+            
+            if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
+              log_success "Deployment successful!"
+            else
+              log_error "Deployment verification failed"
+            fi
