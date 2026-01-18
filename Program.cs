@@ -56,8 +56,13 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 // Configure PostgreSQL connection
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") 
-    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
+// Priority: Environment variable > appsettings.json
+// Environment variable format: ConnectionStrings__DefaultConnection (double underscore for nested config)
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+if (string.IsNullOrWhiteSpace(connectionString))
+{
+    throw new InvalidOperationException("Connection string 'DefaultConnection' not found. Ensure ConnectionStrings__DefaultConnection environment variable is set.");
+}
 
 // Enhance connection string with better connection management settings
 var enhancedConnectionString = connectionString;
