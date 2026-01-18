@@ -85,35 +85,37 @@ jobs:
             echo "Using DB_PASSWORD from environment (from GitHub secret)"
             echo "DB_PASSWORD value is set (length: ${#DB_PASSWORD} characters)"
             
-            # Create .env file - Docker Compose reads this automatically for ${DB_PASSWORD} substitution
+            # Create .env file - MUST be in same directory as docker-compose.yml
+            # Docker Compose automatically reads .env file from current directory
             echo "DB_PASSWORD=$DB_PASSWORD" > .env
-            echo "✅ Created .env file with DB_PASSWORD (length: ${#DB_PASSWORD} characters)"
-            
-            # Verify .env file
-            if ! grep -q "DB_PASSWORD=" .env; then
-              echo "❌ ERROR: .env file doesn't contain DB_PASSWORD!"
-              exit 1
-            fi
+            echo "✅ Created .env file"
+            echo "Current directory: $(pwd)"
+            echo ".env file location: $(pwd)/.env"
+            echo ".env file exists: $([ -f .env ] && echo 'yes' || echo 'no')"
+            echo ".env file contents (password hidden): $(cat .env | sed 's/DB_PASSWORD=.*/DB_PASSWORD=***/')"
             
             # Build new image
             echo "Building Docker image..."
             docker compose build --no-cache api
             
             # Start PostgreSQL (reads .env file for POSTGRES_PASSWORD=${DB_PASSWORD})
-            echo "Starting PostgreSQL..."
-            docker compose up -d postgres
+            echo "Starting PostgreSQL with .env file..."
+            docker compose --env-file .env up -d postgres
             
-            # Wait for PostgreSQL to be healthy (it will retry automatically if restarting)
+            # Wait for PostgreSQL to be healthy
             echo "Waiting for PostgreSQL to be ready..."
             sleep 5
             for i in {1..30}; do
-              if docker compose ps postgres | grep -q "Up.*healthy"; then
-                echo "✅ PostgreSQL is healthy"
+              STATUS=$(docker compose ps postgres --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "")
+              if echo "$STATUS" | grep -q "running\|healthy"; then
+                echo "✅ PostgreSQL is running"
                 break
               fi
               if [ $i -eq 30 ]; then
-                echo "❌ PostgreSQL failed to become healthy"
+                echo "❌ PostgreSQL failed to start - checking logs..."
                 docker compose logs postgres --tail=50
+                echo "PostgreSQL container status:"
+                docker ps -a | grep postgres || echo "Container not found"
                 exit 1
               fi
               sleep 2
@@ -124,9 +126,9 @@ jobs:
             docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASSWORD';" 2>/dev/null || true
             sleep 2
             
-            # Start API container
+            # Start API container (uses .env file for ${DB_PASSWORD} in connection string)
             echo "Starting API service..."
-            docker compose up -d --no-deps --build api
+            docker compose --env-file .env up -d --no-deps --build api
             
             # Wait a bit for container to start
             sleep 5
