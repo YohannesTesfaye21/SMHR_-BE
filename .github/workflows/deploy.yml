@@ -86,15 +86,32 @@ jobs:
             echo "Using DB_PASSWORD from environment (from GitHub secret)"
             echo "DB_PASSWORD value is set (length: ${#DB_PASSWORD} characters)"
             
-            # Create .env file - MUST be in same directory as docker-compose.yml
-            # Docker Compose automatically reads .env file from current directory
-            echo "DB_PASSWORD=$DB_PASSWORD" > .env
+            # Create/update .env file on server - MUST be in same directory as docker-compose.yml
+            # This file will persist on the server and be used by docker-compose
+            echo "Creating/updating .env file on server..."
+            cat > .env << EOF
+DB_PASSWORD=$DB_PASSWORD
+EOF
             echo "✅ Created .env file"
             echo "Current directory: $(pwd)"
+            echo ".env file location: $(pwd)/.env"
             echo ".env file exists: $([ -f .env ] && echo 'yes' || echo 'no')"
+            echo ".env file permissions: $(ls -la .env 2>/dev/null || echo 'not found')"
             
-            # Export to environment for docker-compose variable substitution
+            # Verify .env file contents (password hidden)
+            echo "Verifying .env file contents..."
+            if grep -q "DB_PASSWORD=" .env; then
+              echo "✅ .env file contains DB_PASSWORD"
+            else
+              echo "❌ ERROR: .env file does not contain DB_PASSWORD!"
+              exit 1
+            fi
+            
+            # Export to environment AND source .env file to ensure variables are available
             export DB_PASSWORD
+            set -a  # Automatically export all variables
+            source .env
+            set +a
             echo "✅ Exported DB_PASSWORD to environment (length: ${#DB_PASSWORD} characters)"
             
             # Build new image
@@ -109,8 +126,14 @@ jobs:
               docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
             fi
             
-            # Start PostgreSQL with correct password
-            echo "Starting PostgreSQL..."
+            # Start PostgreSQL with correct password from .env file
+            echo "Starting PostgreSQL with .env file..."
+            # Ensure .env file exists and is readable
+            if [ ! -f .env ]; then
+              echo "❌ ERROR: .env file not found!"
+              exit 1
+            fi
+            # Use --env-file to explicitly load .env file
             docker compose --env-file .env up -d postgres
             
             # Wait for PostgreSQL to be ready
@@ -128,8 +151,14 @@ jobs:
               sleep 2
             done
             
-            # Start API service
-            echo "Starting API service..."
+            # Start API service with .env file
+            echo "Starting API service with .env file..."
+            # Ensure .env file exists
+            if [ ! -f .env ]; then
+              echo "❌ ERROR: .env file not found!"
+              exit 1
+            fi
+            # Use --env-file to explicitly load .env file
             docker compose --env-file .env up -d --no-deps --build api
             
             # Check container status first
