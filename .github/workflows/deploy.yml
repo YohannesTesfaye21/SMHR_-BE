@@ -160,6 +160,15 @@ jobs:
             fi
             log_success "PostgreSQL password verified"
             
+            # Update CONNECTION_STRING password to match DB_PASSWORD
+            log_info "Updating CONNECTION_STRING password to match DB_PASSWORD..."
+            # Escape special characters in DB_PASSWORD for sed
+            ESCAPED_PASSWORD=$(printf '%s\n' "$DB_PASSWORD" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            # Update Password=... in CONNECTION_STRING
+            sed -i.tmp "s/Password=[^;]*/Password=${ESCAPED_PASSWORD}/" .env
+            rm -f .env.tmp
+            log_success "CONNECTION_STRING password updated"
+            
             # Start API service
             log_info "Starting API service..."
             $COMPOSE_CMD --env-file .env up -d --no-deps api || log_error "Failed to start API service"
