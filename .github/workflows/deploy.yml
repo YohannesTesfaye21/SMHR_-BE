@@ -169,9 +169,30 @@ jobs:
             fi
             log_success "PostgreSQL password verified - matches .env file"
             
+            # Verify .env CONNECTION_STRING contains correct password before starting API
+            log_info "Verifying CONNECTION_STRING password in .env file..."
+            ENV_CONN_PASS=$(grep "^CONNECTION_STRING=" .env | sed 's/.*Password=\([^;]*\).*/\1/' || echo "")
+            if [ "$ENV_CONN_PASS" != "$DB_PASSWORD" ]; then
+              log_error ".env CONNECTION_STRING password ($ENV_CONN_PASS) doesn't match DB_PASSWORD!"
+            fi
+            log_success ".env CONNECTION_STRING password verified"
+            
             # Start API service
             log_info "Starting API service with .env file..."
             $COMPOSE_CMD --env-file .env up -d --no-deps api || log_error "Failed to start API service"
+            
+            # Verify API container has correct connection string environment variable
+            log_info "Verifying API container connection string environment variable..."
+            sleep 3
+            API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection || echo "")
+            if [ -z "$API_CONN_STR" ]; then
+              log_error "ConnectionStrings__DefaultConnection not set in API container environment!"
+            elif ! echo "$API_CONN_STR" | grep -q "Password=${DB_PASSWORD}"; then
+              log_error "API container connection string password doesn't match .env DB_PASSWORD!"
+              log_error "API container has: $(echo "$API_CONN_STR" | sed 's/Password=[^;]*/Password=***/')"
+            else
+              log_success "API container connection string verified - password matches .env"
+            fi
             
             # Wait for API to be healthy
             log_info "Waiting for API to be healthy..."
