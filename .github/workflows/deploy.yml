@@ -39,9 +39,9 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: DB_PASSWORD_SECRET
           script: |
-            set -euo pipefail
-            
+            set -eo pipefail
             APP_DIR="/opt/smhfr-be"
             REPO_URL="${{ github.repositoryUrl }}"
             
@@ -101,8 +101,8 @@ jobs:
               log_error "docker-compose.yml not found!"
             fi
             
-            # Get DB_PASSWORD from GitHub secrets
-            DB_PASSWORD="${DB_PASSWORD_SECRET}"
+            # Get DB_PASSWORD from environment variable passed from GitHub secrets
+            DB_PASSWORD="${DB_PASSWORD_SECRET:-}"
             if [ -z "$DB_PASSWORD" ]; then
               log_error "DB_PASSWORD_SECRET not provided! Please set DB_PASSWORD in GitHub secrets."
             fi
