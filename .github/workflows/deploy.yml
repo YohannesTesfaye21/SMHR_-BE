@@ -132,21 +132,11 @@ jobs:
             log_info "Building Docker image..."
             $COMPOSE_CMD build api || log_error "Docker build failed"
             
-            # Stop and remove existing containers completely
-            # This ensures containers are RECREATED (not just restarted) with latest .env values
-            log_info "Stopping and removing existing containers..."
-            $COMPOSE_CMD down 2>/dev/null || true
-            # Also remove containers (not just stop) to force recreation
-            $COMPOSE_CMD rm -f postgres api 2>/dev/null || true
-            
-            # Remove PostgreSQL volume to ensure password matches .env
-            # This ensures PostgreSQL always uses password from .env (from GitHub secrets)
-            # This is necessary because PostgreSQL stores password in volume data files
-            POSTGRES_VOLUME=$(docker volume ls -q | grep -E "(postgres_data|smhfr.*postgres)" | head -1 || echo "")
-            if [ -n "$POSTGRES_VOLUME" ]; then
-              log_info "Removing existing PostgreSQL volume to ensure password matches .env..."
-              docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
-            fi
+            # Stop and remove existing containers and volumes completely
+            # This ensures PostgreSQL is recreated with password from .env
+            # PostgreSQL only uses POSTGRES_PASSWORD during initial creation, so volume must be removed
+            log_info "Stopping containers and removing volumes..."
+            $COMPOSE_CMD down -v 2>/dev/null || true
             
             # Start PostgreSQL with health check
             log_info "Starting PostgreSQL..."
@@ -170,6 +160,14 @@ jobs:
               $COMPOSE_CMD logs postgres --tail=50
               log_error "PostgreSQL failed to start within timeout"
             fi
+            
+            # Verify PostgreSQL password matches .env
+            log_info "Verifying PostgreSQL password from .env..."
+            sleep 2
+            if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+              log_error "PostgreSQL password mismatch! Database expects different password than .env file."
+            fi
+            log_success "PostgreSQL password verified - matches .env file"
             
             # Start API service
             log_info "Starting API service with .env file..."
