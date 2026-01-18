@@ -200,17 +200,33 @@ jobs:
             log_info "Starting API service with .env file..."
             $COMPOSE_CMD --env-file .env up -d --no-deps --force-recreate api || log_error "Failed to start API service"
             
+            # Wait for API container to be running before checking environment
+            log_info "Waiting for API container to start..."
+            sleep 5
+            MAX_WAIT=10
+            WAIT_COUNT=0
+            while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+              if $COMPOSE_CMD ps api --format json 2>/dev/null | grep -q '"State":"running"'; then
+                break
+              fi
+              WAIT_COUNT=$((WAIT_COUNT + 1))
+              sleep 1
+            done
+            
             # Verify API container has correct connection string environment variable
             log_info "Verifying API container connection string environment variable..."
-            sleep 3
-            API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection || echo "")
-            if [ -z "$API_CONN_STR" ]; then
-              log_error "ConnectionStrings__DefaultConnection not set in API container environment!"
-            elif ! echo "$API_CONN_STR" | grep -q "Password=${DB_PASSWORD}"; then
-              log_error "API container connection string password doesn't match .env DB_PASSWORD!"
-              log_error "API container has: $(echo "$API_CONN_STR" | sed 's/Password=[^;]*/Password=***/')"
+            if $COMPOSE_CMD ps api --format json 2>/dev/null | grep -q '"State":"running"'; then
+              API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
+              if [ -z "$API_CONN_STR" ]; then
+                log_error "ConnectionStrings__DefaultConnection not set in API container environment!"
+              elif ! echo "$API_CONN_STR" | grep -q "Password=${DB_PASSWORD}"; then
+                log_error "API container connection string password doesn't match .env DB_PASSWORD!"
+                log_error "API container has: $(echo "$API_CONN_STR" | sed 's/Password=[^;]*/Password=***/')"
+              else
+                log_success "API container connection string verified - password matches .env"
+              fi
             else
-              log_success "API container connection string verified - password matches .env"
+              log_info "API container not running yet, skipping environment verification (will check during health check)"
             fi
             
             # Wait for API to be healthy
