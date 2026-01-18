@@ -151,6 +151,17 @@ EOF
               sleep 2
             done
             
+            # Verify PostgreSQL password matches DB_PASSWORD
+            echo "Verifying PostgreSQL password..."
+            if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+              echo "✅ PostgreSQL password matches DB_PASSWORD"
+            else
+              echo "❌ CRITICAL: PostgreSQL password does NOT match DB_PASSWORD!"
+              echo "   This means the database was initialized with a different password"
+              docker compose logs postgres --tail=50
+              exit 1
+            fi
+            
             # Start API service with .env file
             echo "Starting API service with .env file..."
             # Ensure .env file exists
@@ -158,8 +169,37 @@ EOF
               echo "❌ ERROR: .env file not found!"
               exit 1
             fi
+            
+            # Verify docker-compose can read DB_PASSWORD from .env
+            echo "Verifying docker-compose variable substitution..."
+            COMPOSE_CONFIG=$(docker compose --env-file .env config 2>&1)
+            if echo "$COMPOSE_CONFIG" | grep -q "Password=$DB_PASSWORD"; then
+              echo "✅ Variable substitution working - password found in config"
+            else
+              echo "⚠️  Warning: Could not verify password in docker-compose config"
+              echo "   This might still work, but checking..."
+            fi
+            
             # Use --env-file to explicitly load .env file
             docker compose --env-file .env up -d --no-deps --build api
+            
+            # Verify connection string in API container
+            sleep 3
+            echo "Verifying connection string in API container..."
+            API_CONN_STR=$(docker compose exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
+            if [ -n "$API_CONN_STR" ]; then
+              if echo "$API_CONN_STR" | grep -q "Password=$DB_PASSWORD"; then
+                echo "✅ Connection string in API container has correct password"
+              else
+                echo "❌ CRITICAL: Connection string password does NOT match!"
+                echo "   Connection string: ${API_CONN_STR/Password=*/Password=***}"
+                echo "   Expected password length: ${#DB_PASSWORD}"
+                exit 1
+              fi
+            else
+              echo "❌ CRITICAL: Connection string not found in API container!"
+              exit 1
+            fi
             
             # Check container status first
             echo "=== Container Status ==="
