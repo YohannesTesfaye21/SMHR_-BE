@@ -178,10 +178,10 @@ jobs:
               docker compose ps
               echo ""
               echo "=== Checking if API can reach PostgreSQL ==="
-              docker compose exec api ping -c 2 postgres 2>&1 || echo "Cannot ping postgres container"
+              docker compose exec api sh -c "timeout 5 sh -c 'until nc -z postgres 5432; do sleep 1; done' && echo 'PostgreSQL port is reachable' || echo 'Cannot reach postgres:5432'" 2>&1 || echo "Network check failed"
               echo ""
-              echo "=== Checking PostgreSQL is accessible ==="
-              docker compose exec api nc -zv postgres 5432 2>&1 || echo "Cannot connect to postgres:5432"
+              echo "=== Checking API container network ==="
+              docker compose exec api cat /etc/hosts | grep postgres || echo "PostgreSQL hostname not in /etc/hosts"
               exit 1
             }
             

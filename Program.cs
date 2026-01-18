@@ -233,15 +233,12 @@ using (var scope = app.Services.CreateScope())
         {
             logger.LogInformation("Attempting to connect to database (attempt {Attempt}/{MaxRetries})...", retryCount + 1, maxRetries);
             
-            // Test connection
-            if (db.Database.CanConnect())
-            {
-                // Execute a simple query to verify authentication
-                db.Database.ExecuteSqlRaw("SELECT 1");
-                connectionValid = true;
-                logger.LogInformation("✅ Database connection validated successfully");
-                break;
-            }
+            // Test connection - this will throw an exception if there's an error
+            // CanConnect() can return false without throwing, so we force a query execution
+            db.Database.ExecuteSqlRaw("SELECT 1");
+            connectionValid = true;
+            logger.LogInformation("✅ Database connection validated successfully");
+            break;
         }
         catch (Npgsql.PostgresException pgEx) when (pgEx.SqlState == "28P01")
         {
