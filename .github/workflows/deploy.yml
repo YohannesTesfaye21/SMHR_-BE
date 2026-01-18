@@ -88,22 +88,14 @@ jobs:
             
             # Create .env file - MUST be in same directory as docker-compose.yml
             # Docker Compose automatically reads .env file from current directory
-            # Construct connection string directly to avoid substitution issues
-            CONNECTION_STRING="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=$DB_PASSWORD;Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
-            
             echo "DB_PASSWORD=$DB_PASSWORD" > .env
-            echo "CONNECTION_STRING=$CONNECTION_STRING" >> .env
             echo "✅ Created .env file"
             echo "Current directory: $(pwd)"
-            echo ".env file location: $(pwd)/.env"
             echo ".env file exists: $([ -f .env ] && echo 'yes' || echo 'no')"
-            echo ".env file contents (passwords hidden): $(cat .env | sed 's/\(DB_PASSWORD\|CONNECTION_STRING.*Password\)=[^$]*/\1=***/')"
             
             # Export to environment for docker-compose variable substitution
             export DB_PASSWORD
-            export CONNECTION_STRING
             echo "✅ Exported DB_PASSWORD to environment (length: ${#DB_PASSWORD} characters)"
-            echo "✅ Exported CONNECTION_STRING to environment"
             
             # Build new image
             echo "Building Docker image..."
