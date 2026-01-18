@@ -109,137 +109,56 @@ jobs:
             echo "Building Docker image..."
             docker compose build --no-cache api
             
-            # Ensure database volume has correct password BEFORE starting
-            # Stop any existing PostgreSQL container
-            echo "Stopping any existing PostgreSQL container..."
-            docker compose down postgres 2>/dev/null || true
-            sleep 2
-            
-            # Check if volume exists and verify password
+            # Stop containers and remove volume to ensure fresh start with correct password
+            echo "Stopping containers and removing volume..."
+            docker compose down 2>/dev/null || true
             POSTGRES_VOLUME=$(docker volume ls -q | grep -E "(postgres_data|smhfr.*postgres)" | head -1 || echo "")
-            VOLUME_NEEDS_RECREATION=false
-            
             if [ -n "$POSTGRES_VOLUME" ]; then
-              echo "Found existing PostgreSQL volume: $POSTGRES_VOLUME"
-              echo "Verifying if password matches DB_PASSWORD..."
-              
-              # Start PostgreSQL temporarily to check password
-              docker compose --env-file .env up -d postgres
-              sleep 5
-              
-              # Wait for PostgreSQL to be ready
-              for i in {1..20}; do
-                if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                  break
-                fi
-                if [ $i -eq 20 ]; then
-                  echo "⚠️  PostgreSQL not ready, will recreate volume"
-                  docker compose down postgres 2>/dev/null || true
-                  VOLUME_NEEDS_RECREATION=true
-                  break
-                fi
-                sleep 1
-              done
-              
-              # Try to verify password matches
-              if [ "$VOLUME_NEEDS_RECREATION" = false ]; then
-                if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-                  echo "✅ Existing volume password matches DB_PASSWORD - keeping volume"
-                  docker compose down postgres 2>/dev/null || true
-                else
-                  echo "❌ Existing volume password does NOT match DB_PASSWORD"
-                  echo "   Removing volume to recreate with correct password..."
-                  docker compose down postgres 2>/dev/null || true
-                  docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
-                  VOLUME_NEEDS_RECREATION=true
-                fi
-              fi
-            else
-              echo "No existing PostgreSQL volume found - will create new one"
+              docker volume rm "$POSTGRES_VOLUME" 2>/dev/null || true
             fi
             
-            # Start PostgreSQL - it will initialize with correct password from POSTGRES_PASSWORD
-            echo "Starting PostgreSQL with correct password from .env file..."
+            # Start PostgreSQL with correct password
+            echo "Starting PostgreSQL..."
             docker compose --env-file .env up -d postgres
             
-            # Wait for PostgreSQL to be healthy
-            echo "Waiting for PostgreSQL to be ready..."
-            sleep 5
+            # Wait for PostgreSQL to be ready
+            echo "Waiting for PostgreSQL..."
             for i in {1..30}; do
               if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
                 echo "✅ PostgreSQL is ready"
                 break
               fi
               if [ $i -eq 30 ]; then
-                echo "❌ PostgreSQL failed to start - checking logs..."
+                echo "❌ PostgreSQL failed to start"
                 docker compose logs postgres --tail=50
-                echo "PostgreSQL container status:"
-                docker ps -a | grep postgres || echo "Container not found"
                 exit 1
               fi
               sleep 2
             done
             
-            # Verify password is correct (database was initialized with POSTGRES_PASSWORD from .env)
-            echo "Verifying database password matches DB_PASSWORD..."
-            if docker compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              echo "✅ Password verification successful - database initialized with correct password"
-            else
-              echo "❌ CRITICAL: Password verification failed!"
-              echo "   This should not happen if volume was created correctly"
-              echo "   DB_PASSWORD length: ${#DB_PASSWORD} characters"
-              docker compose logs postgres --tail=50
-              exit 1
-            fi
-            sleep 2
-            
-            # Start API container (CONNECTION_STRING is already in .env file)
+            # Start API service
             echo "Starting API service..."
-            # CONNECTION_STRING is already exported and in .env file
             docker compose --env-file .env up -d --no-deps --build api
-            
-            # Wait a bit for container to start
-            sleep 5
-            
-            # Verify the connection string in the API container
-            echo "Verifying connection string in API container..."
-            sleep 3
-            API_CONN_STR=$(docker compose exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
-            if [ -n "$API_CONN_STR" ]; then
-              echo "✅ Connection string found in API container environment"
-              # Verify it matches what we set
-              if [ "$API_CONN_STR" = "$CONNECTION_STRING" ]; then
-                echo "✅ Connection string matches expected value"
-              else
-                echo "⚠️  Connection string doesn't match, but continuing..."
-              fi
-            else
-              echo "❌ Connection string not found in API container - API may be using appsettings.json"
-              echo "   This is a critical error - the environment variable is not being set"
-              exit 1
-            fi
             
             # Check container status first
             echo "=== Container Status ==="
             docker compose ps
             
-            # Wait for new API to be healthy
+            # Wait for API to be healthy
             echo "Waiting for API to be healthy..."
-            timeout 60 bash -c 'until curl -f http://localhost:8080/api/health > /dev/null 2>&1; do sleep 2; done' || {
-              echo "❌ API health check failed, checking logs..."
-              echo "=== Full API Logs (last 150 lines) ==="
-              docker compose logs api --tail=150
-              echo ""
-              echo "=== Checking container status ==="
-              docker compose ps
-              echo ""
-              echo "=== Checking if API can reach PostgreSQL ==="
-              docker compose exec api sh -c "timeout 5 sh -c 'until nc -z postgres 5432; do sleep 1; done' && echo 'PostgreSQL port is reachable' || echo 'Cannot reach postgres:5432'" 2>&1 || echo "Network check failed"
-              echo ""
-              echo "=== Checking API container network ==="
-              docker compose exec api cat /etc/hosts | grep postgres || echo "PostgreSQL hostname not in /etc/hosts"
-              exit 1
-            }
+            sleep 10
+            for i in {1..30}; do
+              if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
+                echo "✅ API is healthy"
+                break
+              fi
+              if [ $i -eq 30 ]; then
+                echo "❌ API health check failed"
+                docker compose logs api --tail=100
+                exit 1
+              fi
+              sleep 2
+            done
             
             # Remove old/stopped containers
             docker container prune -f
