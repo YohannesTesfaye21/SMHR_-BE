@@ -87,30 +87,32 @@ jobs:
             echo "DB_PASSWORD value is set (length: ${#DB_PASSWORD} characters)"
             
             # Create/update .env file on server - MUST be in same directory as docker-compose.yml
-            # This file will persist on the server and be used by docker-compose
+            # Build complete connection string to avoid variable substitution issues
+            CONNECTION_STRING="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=$DB_PASSWORD;Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
+            
             echo "Creating/updating .env file on server..."
             echo "DB_PASSWORD=$DB_PASSWORD" > .env
-            echo "✅ Created .env file"
+            echo "CONNECTION_STRING=$CONNECTION_STRING" >> .env
+            echo "✅ Created .env file with DB_PASSWORD and CONNECTION_STRING"
             echo "Current directory: $(pwd)"
             echo ".env file location: $(pwd)/.env"
             echo ".env file exists: $([ -f .env ] && echo 'yes' || echo 'no')"
-            echo ".env file permissions: $(ls -la .env 2>/dev/null || echo 'not found')"
             
-            # Verify .env file contents (password hidden)
+            # Verify .env file contents (passwords hidden)
             echo "Verifying .env file contents..."
-            if grep -q "DB_PASSWORD=" .env; then
-              echo "✅ .env file contains DB_PASSWORD"
+            if grep -q "DB_PASSWORD=" .env && grep -q "CONNECTION_STRING=" .env; then
+              echo "✅ .env file contains both DB_PASSWORD and CONNECTION_STRING"
             else
-              echo "❌ ERROR: .env file does not contain DB_PASSWORD!"
+              echo "❌ ERROR: .env file is missing required variables!"
               exit 1
             fi
             
-            # Export to environment AND source .env file to ensure variables are available
+            # Export to environment
             export DB_PASSWORD
-            set -a  # Automatically export all variables
-            source .env
-            set +a
-            echo "✅ Exported DB_PASSWORD to environment (length: ${#DB_PASSWORD} characters)"
+            export CONNECTION_STRING
+            echo "✅ Exported variables to environment"
+            echo "   DB_PASSWORD length: ${#DB_PASSWORD} characters"
+            echo "   CONNECTION_STRING length: ${#CONNECTION_STRING} characters"
             
             # Build new image
             echo "Building Docker image..."
@@ -180,53 +182,41 @@ jobs:
               exit 1
             fi
             
-            # Verify docker-compose can read DB_PASSWORD from .env
+            # Verify docker-compose can read CONNECTION_STRING from .env
             echo "Verifying docker-compose variable substitution..."
             COMPOSE_CONFIG=$(docker compose --env-file .env config 2>&1)
-            if echo "$COMPOSE_CONFIG" | grep -q "Password=$DB_PASSWORD"; then
-              echo "✅ Variable substitution working - password found in config"
+            if echo "$COMPOSE_CONFIG" | grep -q "ConnectionStrings__DefaultConnection=$CONNECTION_STRING"; then
+              echo "✅ Variable substitution working - CONNECTION_STRING found in config"
             else
-              echo "⚠️  Warning: Could not verify password in docker-compose config"
-              echo "   This might still work, but checking..."
+              echo "⚠️  Warning: Could not verify CONNECTION_STRING in docker-compose config"
+              echo "   Checking what's actually in the config..."
+              echo "$COMPOSE_CONFIG" | grep -A 2 "ConnectionStrings" || echo "ConnectionStrings not found in config"
             fi
             
             # Use --env-file to explicitly load .env file
             docker compose --env-file .env up -d --no-deps --build api
             
-            # Verify connection string in API container and test actual connection
+            # Verify connection string in API container matches what we set
             sleep 5  # Give API more time to start
             echo "Verifying connection string in API container..."
             API_CONN_STR=$(docker compose exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
             if [ -n "$API_CONN_STR" ]; then
-              # Extract password from connection string
-              CONN_PASSWORD=$(echo "$API_CONN_STR" | sed -n 's/.*Password=\([^;]*\).*/\1/p')
-              if [ "$CONN_PASSWORD" = "$DB_PASSWORD" ]; then
-                echo "✅ Connection string in API container has correct password"
-                echo "   Password length: ${#CONN_PASSWORD} characters"
+              if [ "$API_CONN_STR" = "$CONNECTION_STRING" ]; then
+                echo "✅ Connection string in API container matches exactly"
+                echo "   Connection string length: ${#API_CONN_STR} characters"
               else
-                echo "❌ CRITICAL: Connection string password does NOT match!"
-                echo "   Connection string password: ${CONN_PASSWORD:0:5}*** (length: ${#CONN_PASSWORD})"
-                echo "   DB_PASSWORD: ${DB_PASSWORD:0:5}*** (length: ${#DB_PASSWORD})"
-                echo "   Full connection string: $API_CONN_STR"
+                echo "❌ CRITICAL: Connection string does NOT match!"
+                echo "   Expected length: ${#CONNECTION_STRING}"
+                echo "   Actual length: ${#API_CONN_STR}"
+                echo "   Expected (password hidden): ${CONNECTION_STRING/Password=$DB_PASSWORD/Password=***}"
+                echo "   Actual (password hidden): ${API_CONN_STR/Password=*/Password=***}"
                 exit 1
               fi
             else
               echo "❌ CRITICAL: Connection string not found in API container environment!"
-              echo "   API may be using appsettings.json instead"
-              echo "   Checking what connection string API is actually using..."
-              docker compose exec -T api cat appsettings.json 2>/dev/null | grep -A 3 ConnectionStrings || echo "Could not read appsettings.json"
+              echo "   API may be using appsettings.json instead of environment variable"
+              echo "   This means the environment variable is not being set correctly"
               exit 1
-            fi
-            
-            # Test actual connection from API container to PostgreSQL
-            echo "Testing database connection from API container perspective..."
-            # Try to connect using the same method the API uses
-            TEST_RESULT=$(docker compose exec -T api sh -c "export PGPASSWORD='$DB_PASSWORD' && timeout 3 psql -h postgres -U postgres -d smhfr_db -c 'SELECT 1;' 2>&1" || echo "FAILED")
-            if echo "$TEST_RESULT" | grep -q "SELECT 1"; then
-              echo "✅ Direct connection test from API container succeeded"
-            else
-              echo "⚠️  Direct connection test failed (psql may not be installed in API container)"
-              echo "   Test result: $TEST_RESULT"
             fi
             
             # Check container status first
