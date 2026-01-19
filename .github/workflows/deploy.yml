@@ -71,21 +71,28 @@ jobs:
               sleep 2
             done
 
-            # CRITICAL: Set password in Postgres to match .env file
-            # This must happen BEFORE API starts, and the password is stored in the volume
-            echo "🔐 Setting PostgreSQL password to match secret..."
-            for i in {1..10}; do
-              if docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" 2>/dev/null; then
-                echo "✅ Password set successfully"
-                sleep 3  # Give Postgres time to process the password change
+            # Make entrypoint script executable (it sets password on EVERY container start)
+            echo "🔐 Setting up password synchronization via entrypoint..."
+            chmod +x docker-entrypoint-postgres.sh
+            
+            # Restart postgres to trigger entrypoint script (sets password from POSTGRES_PASSWORD env var)
+            echo "🔄 Restarting Postgres - entrypoint will set password automatically..."
+            docker compose restart postgres || docker compose --env-file .env up -d postgres
+            
+            # Wait for postgres to be ready (entrypoint sets password during startup)
+            echo "⏳ Waiting for Postgres to start and set password..."
+            for j in {1..60}; do
+              if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                echo "✅ Postgres is ready (password should be set by entrypoint)"
+                sleep 2  # Give entrypoint time to complete password sync
                 break
               fi
-              echo "⏳ Waiting for Postgres to accept commands (attempt $i/10)..."
-              sleep 2
+              sleep 1
             done
             
             # Stop API if running to clear connection pool
             docker compose stop api 2>/dev/null || true
+            sleep 2
             
             # Build and start API (keep postgres running)
             docker compose --env-file .env up -d --build --no-deps api
