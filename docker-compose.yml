@@ -37,7 +37,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
-      ASPNETCORE_Kestrel__Certificates__Default__Path: /app/certs/cert.pfx
+      ASPNETCORE_Kestrel__Certificates__Default__Path: ${CERT_PATH:-}
       ASPNETCORE_Kestrel__Certificates__Default__Password: ${CERT_PASSWORD:-}
       ConnectionStrings__DefaultConnection: "Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};Pooling=true;Minimum Pool Size=5;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable"
     volumes:

@@ -12,6 +12,16 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Check certificate before Kestrel configuration loads
+// Clear environment variable if certificate file doesn't exist to prevent Kestrel auto-loading
+var certPathEnv = Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path");
+if (!string.IsNullOrEmpty(certPathEnv) && !File.Exists(certPathEnv))
+{
+    // Clear the environment variable to prevent Kestrel from trying to load non-existent certificate
+    Environment.SetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path", null);
+    Console.WriteLine($"⚠️  Certificate file not found: {certPathEnv}. HTTPS disabled. Using HTTP only.");
+}
+
 // Configure Kestrel for HTTPS (optional)
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -19,27 +29,36 @@ builder.WebHost.ConfigureKestrel(options =>
     options.ListenAnyIP(8080);
     
     // HTTPS endpoint (only if certificate is available)
-    var certPath = builder.Configuration["Kestrel:Certificates:Default:Path"] 
-        ?? Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path");
-    var certPassword = builder.Configuration["Kestrel:Certificates:Default:Password"] 
-        ?? Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Password");
+    var certPath = Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path")
+        ?? builder.Configuration["Kestrel:Certificates:Default:Path"];
+    var certPassword = Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Password")
+        ?? builder.Configuration["Kestrel:Certificates:Default:Password"];
     
+    // Only configure HTTPS if certificate file actually exists
     if (!string.IsNullOrEmpty(certPath) && File.Exists(certPath))
     {
-        // Use provided certificate
-        options.ListenAnyIP(8443, listenOptions =>
+        try
         {
-            if (!string.IsNullOrEmpty(certPassword))
+            // Use provided certificate
+            options.ListenAnyIP(8443, listenOptions =>
             {
-                listenOptions.UseHttps(certPath, certPassword);
-            }
-            else
-            {
-                listenOptions.UseHttps(certPath);
-            }
-        });
+                if (!string.IsNullOrEmpty(certPassword))
+                {
+                    listenOptions.UseHttps(certPath, certPassword);
+                }
+                else
+                {
+                    listenOptions.UseHttps(certPath);
+                }
+            });
+            Console.WriteLine($"✅ HTTPS enabled with certificate: {certPath}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"⚠️  Error loading certificate: {ex.Message}. HTTPS disabled. Using HTTP only.");
+        }
     }
-    // If no certificate, HTTPS is not enabled (HTTP only)
+    // If no certificate path or file doesn't exist, HTTPS is not enabled (HTTP only)
 });
 
 // Add services to the container.
