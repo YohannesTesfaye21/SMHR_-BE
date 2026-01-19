@@ -102,46 +102,14 @@ jobs:
             docker compose --env-file .env up -d --no-deps --force-recreate api
 
             # -----------------------------
-            # 4️⃣ Wait for API container and verify logs
-            # -----------------------------
-            echo "⏳ Waiting for API to start..."
-            MAX_WAIT=20
-            WAIT_COUNT=0
-            until [ $WAIT_COUNT -ge $MAX_WAIT ]; do
-              STATE=$(docker compose ps api --format json | grep -o '"State":"[^"]*"' | cut -d'"' -f4)
-              if [ "$STATE" = "running" ]; then
-                echo "✅ API container is running"
-                break
-              fi
-              ((WAIT_COUNT++))
-              sleep 2
-            done
-
-            if [ "$STATE" != "running" ]; then
-              echo "❌ API failed to start"
-              docker compose logs api --tail=50
-              exit 1
-            fi
-
-            # -----------------------------
-            # 5️⃣ Verify API health
+            # 4️⃣ Wait for API to be healthy
             # -----------------------------
             echo "⏳ Waiting for API to be healthy..."
-            MAX_HEALTH_RETRIES=30
-            HEALTH_RETRY=0
-            HEALTHY=false
+            sleep 30
             
-            until [ $HEALTH_RETRY -ge $MAX_HEALTH_RETRIES ]; do
-              if docker compose exec -T api curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
-                HEALTHY=true
-                echo "✅ API health check passed"
-                break
-              fi
-              ((HEALTH_RETRY++))
-              sleep 2
-            done
-            
-            if [ "$HEALTHY" != "true" ]; then
+            if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
+              echo "✅ API health check passed"
+            else
               echo "❌ API health check failed"
               docker compose logs api --tail=100
               exit 1

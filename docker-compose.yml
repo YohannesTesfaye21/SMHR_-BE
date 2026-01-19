@@ -35,14 +35,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
-      ConnectionStrings__DefaultConnection: >
-        Host=${DB_HOST};
-        Port=${DB_PORT};
-        Database=${DB_NAME};
-        Username=${DB_USER};
-        Password=${DB_PASSWORD};
-        Pooling=false;
-        SSL Mode=Disable
+      ConnectionStrings__DefaultConnection: "Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};Pooling=true;SSL Mode=Disable"
     depends_on:
       postgres:
         condition: service_healthy
