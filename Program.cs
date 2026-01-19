@@ -275,12 +275,54 @@ using (var scope = app.Services.CreateScope())
     {
         logger.LogInformation("Applying database migrations...");
         
-        // Test connection before migrating
-        if (!db.Database.CanConnect())
+        // Test connection before migrating - catch actual exceptions
+        try
         {
-            logger.LogError("❌ Cannot connect to database before migrations!");
-            logger.LogError("   This usually indicates a connection string or authentication issue.");
-            throw new InvalidOperationException("Cannot connect to database. Check connection string and credentials.");
+            var canConnect = db.Database.CanConnect();
+            if (!canConnect)
+            {
+                logger.LogError("❌ Cannot connect to database before migrations!");
+                logger.LogError("   This usually indicates a connection string or authentication issue.");
+                throw new InvalidOperationException("Cannot connect to database. Check connection string and credentials.");
+            }
+            logger.LogInformation("✅ Database connection test successful");
+        }
+        catch (Npgsql.NpgsqlException ex)
+        {
+            logger.LogError(ex, "❌ Database connection failed with NpgsqlException!");
+            logger.LogError("   SQL State: {SqlState}", ex.SqlState ?? "Unknown");
+            logger.LogError("   Error Code: {ErrorCode}", ex.ErrorCode);
+            logger.LogError("   Message: {Message}", ex.Message);
+            
+            if (ex.SqlState == "28P01")
+            {
+                logger.LogError("   ❌ PASSWORD AUTHENTICATION FAILED!");
+                logger.LogError("   The password in the connection string does not match PostgreSQL.");
+                logger.LogError("   Please verify ConnectionStrings__DefaultConnection environment variable.");
+            }
+            else if (ex.SqlState == "3D000")
+            {
+                logger.LogError("   ❌ DATABASE DOES NOT EXIST!");
+                logger.LogError("   The database 'smhfr_db' might not have been created.");
+            }
+            else if (ex.Message.Contains("could not translate host name") || ex.Message.Contains("Name or service not known"))
+            {
+                logger.LogError("   ❌ CANNOT RESOLVE DATABASE HOST!");
+                logger.LogError("   The hostname 'postgres' cannot be resolved.");
+                logger.LogError("   This might indicate a Docker network issue.");
+            }
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "❌ Database connection test failed!");
+            logger.LogError("   Exception type: {ExceptionType}", ex.GetType().Name);
+            logger.LogError("   Message: {Message}", ex.Message);
+            if (ex.InnerException != null)
+            {
+                logger.LogError("   Inner exception: {InnerException}", ex.InnerException.Message);
+            }
+            throw;
         }
         
         db.Database.Migrate();
@@ -288,7 +330,7 @@ using (var scope = app.Services.CreateScope())
     }
     catch (Npgsql.NpgsqlException ex) when (ex.SqlState == "28P01")
     {
-        logger.LogError(ex, "❌ Database password authentication failed!");
+        logger.LogError(ex, "❌ Database password authentication failed during migration!");
         logger.LogError("   SQL State: {SqlState}", ex.SqlState);
         logger.LogError("   This indicates the password in the connection string does not match PostgreSQL.");
         logger.LogError("   Please verify ConnectionStrings__DefaultConnection environment variable.");

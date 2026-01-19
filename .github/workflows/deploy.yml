@@ -96,14 +96,30 @@ jobs:
             # Create/update .env file BEFORE git reset to ensure it persists
             # .env is in .gitignore, so git reset won't delete it, but we recreate it anyway
             log_info "Creating/updating .env file from GitHub secrets (before git reset)..."
+            # Build connection string with actual password value (not variable reference)
+            # Docker-compose does NOT expand variables inside .env file values
+            # So we must build the full connection string here with the actual password
+            CONNECTION_STRING_VALUE="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=false;SSL Mode=Disable"
             {
               echo "DB_PASSWORD=${DB_PASSWORD}"
-              # Temporarily disable pooling to debug connection issues
-              # Pooling=false forces new connections each time, helping identify password/auth issues
-              echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=false;SSL Mode=Disable"
+              echo "CONNECTION_STRING=${CONNECTION_STRING_VALUE}"
             } > .env
             chmod 600 .env  # Secure the file
-            log_success ".env file created/updated with DB_PASSWORD from GitHub secrets"
+            
+            # Verify the connection string was written correctly (for debugging)
+            if grep -q "^CONNECTION_STRING=" .env; then
+              CONN_STR_FOR_LOG=$(grep "^CONNECTION_STRING=" .env | sed 's/Password=[^;]*/Password=***/')
+              log_info "Connection string format (password masked): $CONN_STR_FOR_LOG"
+              if echo "$CONN_STR_FOR_LOG" | grep -q "Password=\*\*\*"; then
+                log_success ".env file created/updated with DB_PASSWORD from GitHub secrets"
+              else
+                log_error "❌ Connection string missing Password= prefix!"
+                exit 1
+              fi
+            else
+              log_error "❌ Failed to write CONNECTION_STRING to .env file!"
+              exit 1
+            fi
             
             # Clone or update repository (AFTER .env is created)
             if [ -d ".git" ]; then
@@ -118,12 +134,20 @@ jobs:
             # Verify .env file still exists after git reset (it should, since it's in .gitignore)
             if [ ! -f ".env" ]; then
               log_error ".env file missing after git reset! Recreating..."
+              # Rebuild connection string with actual password value
+              CONNECTION_STRING_VALUE="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=false;SSL Mode=Disable"
               {
                 echo "DB_PASSWORD=${DB_PASSWORD}"
-                # Temporarily disable pooling to debug connection issues
-                echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=false;SSL Mode=Disable"
+                echo "CONNECTION_STRING=${CONNECTION_STRING_VALUE}"
               } > .env
               chmod 600 .env
+              
+              # Verify it was created correctly
+              if ! grep -q "^CONNECTION_STRING=.*Password=" .env; then
+                log_error "❌ Recreated .env file is malformed - missing Password= in connection string!"
+                exit 1
+              fi
+              log_success ".env file recreated successfully"
             fi
             
             # Verify docker-compose.yml exists
@@ -250,22 +274,42 @@ jobs:
             ENV_CONN_STR=$(grep "^CONNECTION_STRING=" .env | cut -d'=' -f2- || echo "")
             if [ -z "$ENV_CONN_STR" ]; then
               log_error "CONNECTION_STRING not found in .env file!"
+              exit 1
             fi
             
+            # CRITICAL: Verify Password= is present in connection string
+            if ! echo "$ENV_CONN_STR" | grep -q "Password="; then
+              log_error "❌ CONNECTION_STRING is malformed - missing 'Password=' prefix!"
+              log_error "Connection string should have: Password=xxx"
+              log_error "Current connection string (masked): $(echo "$ENV_CONN_STR" | sed 's/Password=[^;]*/Password=***/')"
+              log_error "This will cause database connection failures!"
+              exit 1
+            fi
+            log_success "✅ CONNECTION_STRING contains Password= prefix"
+            
             # Verify database name is smhfr_db (not postgres)
-            ENV_CONN_DB=$(echo "$ENV_CONN_STR" | sed 's/.*Database=\([^;]*\).*/\1/' || echo "")
+            ENV_CONN_DB=$(echo "$ENV_CONN_STR" | sed -n 's/.*Database=\([^;]*\).*/\1/p' || echo "")
             if [ "$ENV_CONN_DB" != "smhfr_db" ]; then
               log_error ".env CONNECTION_STRING has wrong database name: '$ENV_CONN_DB' (expected: 'smhfr_db')!"
               log_error "This will cause connection failures. Please ensure Database=smhfr_db in connection string."
+              exit 1
             fi
             log_success ".env CONNECTION_STRING database name verified: $ENV_CONN_DB"
             
             # Verify password matches
-            ENV_CONN_PASS=$(echo "$ENV_CONN_STR" | sed 's/.*Password=\([^;]*\).*/\1/' || echo "")
-            if [ "$ENV_CONN_PASS" != "$DB_PASSWORD" ]; then
-              log_error ".env CONNECTION_STRING password ($ENV_CONN_PASS) doesn't match DB_PASSWORD!"
+            ENV_CONN_PASS=$(echo "$ENV_CONN_STR" | sed -n 's/.*Password=\([^;]*\).*/\1/p' || echo "")
+            if [ -z "$ENV_CONN_PASS" ]; then
+              log_error "❌ Could not extract password from CONNECTION_STRING!"
+              log_error "Connection string format might be incorrect"
+              exit 1
             fi
-            log_success ".env CONNECTION_STRING password verified"
+            if [ "$ENV_CONN_PASS" != "$DB_PASSWORD" ]; then
+              log_error ".env CONNECTION_STRING password doesn't match DB_PASSWORD!"
+              log_error "Expected password length: ${#DB_PASSWORD}"
+              log_error "Actual password length: ${#ENV_CONN_PASS}"
+              exit 1
+            fi
+            log_success ".env CONNECTION_STRING password verified (length: ${#ENV_CONN_PASS})"
             
             # Remove API container to ensure fresh start with correct environment variables
             log_info "Removing API container to ensure fresh environment..."
