@@ -53,7 +53,7 @@ jobs:
             
             # Reset and start fresh
             docker compose down -v --remove-orphans || true
-            docker volume rm smhfr-be_postgres_data 2>/dev/null || true
+            docker volume ls -q --filter label=com.docker.compose.project=smhfr-be | xargs -r docker volume rm
             docker compose --env-file .env up -d --build --force-recreate
 
             # Wait for Postgres to accept connections
