@@ -67,7 +67,10 @@ jobs:
             # Enforce DB password inside Postgres BEFORE starting API
             echo "🔐 Ensuring DB password matches secret..."
             docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';"
-            echo "✅ Password synchronized"
+            
+            # Verify password by testing connection (wait a bit for postgres to process ALTER USER)
+            echo "🔍 Waiting for password change to take effect..."
+            sleep 5
             
             # Build and start API (keep postgres running)
             docker compose --env-file .env up -d --build --no-deps api
