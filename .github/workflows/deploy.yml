@@ -40,6 +40,7 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             cd /opt/smhfr-be
+            export COMPOSE_PROJECT_NAME=smhfr-be
             
             # Create .env file
             {
@@ -51,8 +52,9 @@ jobs:
             } > .env
             
             # Reset and start fresh
-            docker compose down -v
-            docker compose --env-file .env up -d --build
+            docker compose down -v --remove-orphans || true
+            docker volume rm smhfr-be_postgres_data 2>/dev/null || true
+            docker compose --env-file .env up -d --build --force-recreate
             
             # Wait and check health
             sleep 30
