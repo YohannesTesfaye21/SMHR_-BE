@@ -161,8 +161,10 @@ jobs:
             
             # Verify password matches - remove volume if not
             sleep 2
+            log_info "Testing PostgreSQL connection with provided password..."
             if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              log_info "Password mismatch. Recreating PostgreSQL with correct password..."
+              log_info "Password mismatch detected. Recreating PostgreSQL with correct password..."
+              log_info "This will remove all existing data and recreate the database with the correct password."
               $COMPOSE_CMD down -v
               $COMPOSE_CMD --env-file .env up -d postgres
               sleep 5
@@ -173,16 +175,54 @@ jobs:
                 fi
                 sleep 2
               done
+            else
+              log_success "PostgreSQL password verification successful"
             fi
             
             # Verify that smhfr_db database exists (it should be created by POSTGRES_DB in docker-compose)
             log_info "Verifying smhfr_db database exists..."
             if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
               log_info "Database smhfr_db not found. Creating it..."
-              $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -c "CREATE DATABASE smhfr_db;" 2>&1 || log_error "Failed to create smhfr_db database"
-              log_success "Database smhfr_db created"
+              if $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -c "CREATE DATABASE smhfr_db;" > /dev/null 2>&1; then
+                log_success "Database smhfr_db created"
+              else
+                log_error "Failed to create smhfr_db database. This might indicate a password issue."
+                log_info "Checking if we can connect to postgres database..."
+                if $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT current_user;" 2>&1; then
+                  log_info "Connection to postgres database works, but smhfr_db creation failed"
+                else
+                  log_error "Cannot connect to PostgreSQL at all. Password mismatch confirmed."
+                fi
+                exit 1
+              fi
             else
               log_success "Database smhfr_db exists and is accessible"
+            fi
+            
+            # Test the exact connection string that the API will use
+            log_info "Testing connection string that API will use..."
+            ENV_CONN_STR=$(grep "^CONNECTION_STRING=" .env | cut -d'=' -f2- || echo "")
+            if [ -n "$ENV_CONN_STR" ]; then
+              # Extract connection details for testing
+              DB_HOST=$(echo "$ENV_CONN_STR" | sed 's/.*Host=\([^;]*\).*/\1/' || echo "")
+              DB_PORT=$(echo "$ENV_CONN_STR" | sed 's/.*Port=\([^;]*\).*/\1/' || echo "")
+              DB_NAME=$(echo "$ENV_CONN_STR" | sed 's/.*Database=\([^;]*\).*/\1/' || echo "")
+              DB_USER=$(echo "$ENV_CONN_STR" | sed 's/.*Username=\([^;]*\).*/\1/' || echo "")
+              DB_PASS=$(echo "$ENV_CONN_STR" | sed 's/.*Password=\([^;]*\).*/\1/' || echo "")
+              
+              log_info "Connection string details: Host=$DB_HOST, Port=$DB_PORT, Database=$DB_NAME, Username=$DB_USER"
+              
+              # Test connection using the exact same parameters the API will use
+              if $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASS" postgres psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" > /dev/null 2>&1; then
+                log_success "API connection string test successful"
+              else
+                log_error "API connection string test failed!"
+                log_error "The API will not be able to connect to the database with this connection string."
+                log_error "Connection details: Host=$DB_HOST, Port=$DB_PORT, Database=$DB_NAME, Username=$DB_USER"
+                exit 1
+              fi
+            else
+              log_error "CONNECTION_STRING not found in .env file for testing"
             fi
             
             # Verify .env CONNECTION_STRING contains correct password and database name before starting API
@@ -210,6 +250,11 @@ jobs:
             # Remove API container to ensure fresh start with correct environment variables
             log_info "Removing API container to ensure fresh environment..."
             $COMPOSE_CMD rm -f api 2>/dev/null || true
+            
+            # Show environment variables that will be passed to API
+            log_info "Environment variables for API container:"
+            echo "DB_PASSWORD=${DB_PASSWORD:0:3}***"
+            echo "CONNECTION_STRING=$(echo "$ENV_CONN_STR" | sed 's/Password=[^;]*/Password=***/')"
             
             # Start API service with fresh container and correct .env
             log_info "Starting API service with .env file..."
