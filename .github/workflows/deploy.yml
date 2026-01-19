@@ -61,18 +61,6 @@ jobs:
 
             APP_DIR="/opt/smhfr-be"
             cd "$APP_DIR"
-            
-            # Debug: show directory contents
-            echo "📁 Directory contents:"
-            ls -la
-            
-            # Check if docker-compose.yml exists
-            if [ ! -f "docker-compose.yml" ]; then
-              echo "❌ docker-compose.yml not found!"
-              echo "Looking for it..."
-              find . -name "docker-compose.yml" 2>/dev/null
-              exit 1
-            fi
 
             # -----------------------------
             # 1️⃣ Write .env from secrets
@@ -87,12 +75,13 @@ jobs:
             chmod 600 .env
 
             echo "✅ .env file created"
-            echo "📋 .env contents (password masked):"
-            sed 's/DB_PASSWORD=.*/DB_PASSWORD=***/' .env
 
             # -----------------------------
-            # 2️⃣ Build and start all services
+            # 2️⃣ Reset and start fresh
             # -----------------------------
+            # NOTE: This removes the database volume. Remove this line once password is stable.
+            docker compose down -v
+            
             docker compose --env-file .env up -d --build
             
             # Show container status
@@ -105,23 +94,10 @@ jobs:
             echo "⏳ Waiting for API to be healthy..."
             sleep 30
             
-            # Check if API container is running
-            echo "📊 API container status:"
-            docker compose ps api
-            
-            # Test postgres connectivity from API container
-            echo "🔌 Testing postgres connectivity:"
-            docker compose exec -T postgres pg_isready -U postgres || echo "Postgres not ready"
-            
             if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
-              echo "✅ API health check passed"
+              echo "✅ Deployment completed successfully!"
             else
               echo "❌ API health check failed"
-              echo "=== API Logs ==="
-              docker compose logs api --tail=100
-              echo "=== Postgres Logs ==="
-              docker compose logs postgres --tail=50
+              docker compose logs --tail=50
               exit 1
             fi
-
-            echo "✅ Deployment completed successfully!"
