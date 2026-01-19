@@ -64,20 +64,12 @@ jobs:
               sleep 2
             done
 
-            # Enforce DB password inside Postgres (no data loss)
+            # Enforce DB password inside Postgres BEFORE starting API
             echo "🔐 Ensuring DB password matches secret..."
             docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';"
+            echo "✅ Password synchronized"
             
-            # Verify password works by testing network connection
-            echo "🔍 Verifying password works..."
-            sleep 2
-            if docker compose exec -T postgres sh -c "PGPASSWORD='${{ secrets.DB_PASSWORD }}' psql -h localhost -U postgres -d postgres -c 'SELECT 1;' > /dev/null 2>&1"; then
-              echo "✅ Password verified"
-            else
-              echo "⚠️ Password verification failed, but continuing..."
-            fi
-
-            # Restart API only (keep postgres running)
+            # Build and start API (keep postgres running)
             docker compose --env-file .env up -d --build --no-deps api
             
             # Wait and check health
