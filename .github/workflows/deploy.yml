@@ -66,8 +66,8 @@ jobs:
 
             # Enforce DB password inside Postgres (no data loss)
             echo "🔐 Ensuring DB password matches secret..."
-            docker compose exec -T postgres psql -U postgres -c \
-              "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1
+            docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';"
+            echo "✅ Password updated"
 
             # Restart API only (keep postgres running)
             docker compose --env-file .env up -d --build --no-deps api
