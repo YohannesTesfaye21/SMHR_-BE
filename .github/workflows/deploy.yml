@@ -65,13 +65,13 @@ jobs:
             # -----------------------------
             # 1️⃣ Write .env from secrets
             # -----------------------------
-            cat > .env <<EOF
-DB_HOST=postgres
-DB_PORT=5432
-DB_NAME=smhfr_db
-DB_USER=postgres
-DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-EOF
+            {
+              echo "DB_HOST=postgres"
+              echo "DB_PORT=5432"
+              echo "DB_NAME=smhfr_db"
+              echo "DB_USER=postgres"
+              echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}"
+            } > .env
             chmod 600 .env
 
             echo "✅ .env file created"
