@@ -10,13 +10,11 @@ on:
       - completed
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'Deployment environment'
-        required: true
-        default: 'production'
-        type: choice
-        options:
-          - production
+      reset_database:
+        description: 'Reset database (WARNING: deletes all data)'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   deploy:
@@ -77,17 +75,33 @@ jobs:
             echo "✅ .env file created"
 
             # -----------------------------
-            # 2️⃣ Stop and restart all services
+            # 2️⃣ Reset database if requested
             # -----------------------------
-            docker compose down -v
-            docker compose --env-file .env up -d --build
+            if [ "${{ github.event.inputs.reset_database }}" = "true" ]; then
+              echo "⚠️ Resetting database (all data will be deleted)..."
+              docker compose down -v
+            fi
+
+            # -----------------------------
+            # 3️⃣ Start postgres
+            # -----------------------------
+            docker compose --env-file .env up -d postgres
+            
+            # Wait for postgres to be healthy
+            echo "⏳ Waiting for Postgres..."
+            sleep 10
+            
+            # -----------------------------
+            # 4️⃣ Rebuild and restart API only
+            # -----------------------------
+            docker compose --env-file .env up -d --build --no-deps api
             
             # Show container status
             echo "📊 Container status:"
             docker compose ps
 
             # -----------------------------
-            # 3️⃣ Wait for API to be healthy
+            # 5️⃣ Wait for API to be healthy
             # -----------------------------
             echo "⏳ Waiting for API to be healthy..."
             sleep 30
