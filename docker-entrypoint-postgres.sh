@@ -2,9 +2,26 @@
 # Don't use set -e here - we want to continue even if password sync fails
 # The original entrypoint will handle errors appropriately
 
+# Find the original postgres entrypoint script
+# In postgres:16-alpine, it's typically at /usr/local/bin/docker-entrypoint.sh
+POSTGRES_ENTRYPOINT="/usr/local/bin/docker-entrypoint.sh"
+if [ ! -f "$POSTGRES_ENTRYPOINT" ]; then
+  # Fallback to common locations
+  POSTGRES_ENTRYPOINT="/docker-entrypoint.sh"
+  if [ ! -f "$POSTGRES_ENTRYPOINT" ]; then
+    # Try to find it in PATH
+    POSTGRES_ENTRYPOINT=$(which docker-entrypoint.sh 2>/dev/null || echo "")
+    if [ -z "$POSTGRES_ENTRYPOINT" ]; then
+      echo "❌ ERROR: Cannot find docker-entrypoint.sh"
+      echo "   Tried: /usr/local/bin/docker-entrypoint.sh, /docker-entrypoint.sh"
+      exit 1
+    fi
+  fi
+fi
+
 # First, run the original postgres entrypoint which initializes the database
 # This will start postgres in the background
-/docker-entrypoint.sh postgres "$@" &
+"$POSTGRES_ENTRYPOINT" postgres "$@" &
 POSTGRES_PID=$!
 
 # Function to set password (will be called after postgres is ready)

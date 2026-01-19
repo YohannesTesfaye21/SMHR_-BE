@@ -69,26 +69,19 @@ jobs:
       - name: Start PostgreSQL
         run: |
           docker compose --env-file .env up -d postgres
-          docker compose ps
+          sleep 2
 
       - name: Wait for PostgreSQL
         run: |
           echo "⏳ Waiting for PostgreSQL to be ready..."
-          # Wait for PostgreSQL to accept connections (pg_isready is reliable)
           for i in {1..30}; do
             if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-              echo "✅ PostgreSQL is ready and accepting connections"
-              # Give entrypoint script a moment to complete password sync
-              sleep 2
+              echo "✅ PostgreSQL is ready"
               break
             fi
             echo "⏳ Waiting for PostgreSQL... (attempt $i/30)"
-            sleep 2
+            sleep 1
           done
-          
-          # Verify port is exposed and accessible from host
-          echo "⏳ Verifying port 5432 is accessible from host..."
-          timeout 5 bash -c 'until nc -z localhost 5432; do sleep 0.5; done' && echo "✅ Port 5432 is accessible" || echo "⚠️  Port check timeout (may still work)"
 
       - name: Cache dotnet tools
         uses: actions/cache@v4
@@ -133,8 +126,8 @@ jobs:
 
       - name: Start API service
         run: |
-          docker compose up -d api
-          docker compose ps
+          docker compose --env-file .env up -d api
+          sleep 3
 
       - name: Wait for API health
         run: |
