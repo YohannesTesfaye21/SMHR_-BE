@@ -347,13 +347,8 @@ app.UseSwaggerUI(c =>
     c.RoutePrefix = "swagger"; // Swagger UI at /swagger/index.html
 });
 
-// Enable HTTPS redirection only if HTTPS is configured
-var certPath = builder.Configuration["Kestrel:Certificates:Default:Path"] 
-    ?? Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path");
-if (!string.IsNullOrEmpty(certPath) && File.Exists(certPath))
-{
-    app.UseHttpsRedirection();
-}
+// Don't use HTTPS redirection - it causes issues when both HTTP and HTTPS are enabled
+// Users can access either port directly: HTTP on 8080, HTTPS on 8443
 
 // Enable CORS - must be before UseAuthentication and UseAuthorization
 app.UseCors();
@@ -365,6 +360,25 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+// Log startup information
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    var logger = app.Services.GetRequiredService<ILogger<Program>>();
+    logger.LogInformation("🚀 Application started!");
+    logger.LogInformation("📡 Listening endpoints:");
+    logger.LogInformation("   - HTTP: http://0.0.0.0:8080");
+    var httpsCertPath = Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path")
+        ?? builder.Configuration["Kestrel:Certificates:Default:Path"];
+    if (!string.IsNullOrEmpty(httpsCertPath) && File.Exists(httpsCertPath))
+    {
+        logger.LogInformation("   - HTTPS: https://0.0.0.0:8443 ✅");
+    }
+    else
+    {
+        logger.LogInformation("   - HTTPS: Not configured");
+    }
+});
 
 // Initialize database and seed admin user on startup
 using (var scope = app.Services.CreateScope())
