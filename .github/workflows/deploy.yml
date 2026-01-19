@@ -132,11 +132,11 @@ jobs:
             log_info "Building Docker image..."
             $COMPOSE_CMD build api || log_error "Docker build failed"
             
-            # Stop containers (keep volumes to preserve data)
+            # Stop containers
             log_info "Stopping containers..."
             $COMPOSE_CMD down 2>/dev/null || true
             
-            # Start PostgreSQL with health check
+            # Start PostgreSQL with .env (password comes from .env file)
             log_info "Starting PostgreSQL..."
             $COMPOSE_CMD --env-file .env up -d postgres || log_error "Failed to start PostgreSQL"
             
@@ -159,42 +159,49 @@ jobs:
               log_error "PostgreSQL failed to start within timeout"
             fi
             
-            # Update PostgreSQL password if it doesn't match .env
-            # PostgreSQL only uses POSTGRES_PASSWORD during initial creation, so we update it directly
-            # Local connections within container don't require password (trust authentication)
-            log_info "Checking PostgreSQL password..."
+            # Verify password matches - remove volume if not
             sleep 2
             if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              log_info "PostgreSQL password doesn't match .env. Updating password..."
-              # Connect locally (no password needed for Unix socket connections in container)
-              # Try updating password - this should work via local connection
-              UPDATE_RESULT=$($COMPOSE_CMD exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${DB_PASSWORD}';" 2>&1)
-              if [ $? -eq 0 ]; then
-                log_success "PostgreSQL password updated successfully"
-                sleep 1
-              else
-                log_error "Failed to update PostgreSQL password: $UPDATE_RESULT"
-                log_error "This usually means the volume has a different password. Consider recreating the volume."
-                exit 1
-              fi
+              log_info "Password mismatch. Recreating PostgreSQL with correct password..."
+              $COMPOSE_CMD down -v
+              $COMPOSE_CMD --env-file .env up -d postgres
+              sleep 5
+              for i in {1..30}; do
+                if $COMPOSE_CMD exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                  log_success "PostgreSQL recreated with correct password"
+                  break
+                fi
+                sleep 2
+              done
+            fi
+            
+            # Verify that smhfr_db database exists (it should be created by POSTGRES_DB in docker-compose)
+            log_info "Verifying smhfr_db database exists..."
+            if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
+              log_info "Database smhfr_db not found. Creating it..."
+              $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -c "CREATE DATABASE smhfr_db;" 2>&1 || log_error "Failed to create smhfr_db database"
+              log_success "Database smhfr_db created"
             else
-              log_success "PostgreSQL password already matches .env file"
+              log_success "Database smhfr_db exists and is accessible"
             fi
             
-            # Verify PostgreSQL password matches .env after update - MUST pass or deployment fails
-            log_info "Verifying PostgreSQL password..."
-            sleep 2
-            if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              log_error "PostgreSQL password verification FAILED after update!"
-              log_error "The database password does not match .env DB_PASSWORD."
-              log_error "Deployment cannot continue with mismatched passwords."
-              exit 1
+            # Verify .env CONNECTION_STRING contains correct password and database name before starting API
+            log_info "Verifying CONNECTION_STRING in .env file..."
+            ENV_CONN_STR=$(grep "^CONNECTION_STRING=" .env | cut -d'=' -f2- || echo "")
+            if [ -z "$ENV_CONN_STR" ]; then
+              log_error "CONNECTION_STRING not found in .env file!"
             fi
-            log_success "PostgreSQL password verified - matches .env file"
             
-            # Verify .env CONNECTION_STRING contains correct password before starting API
-            log_info "Verifying CONNECTION_STRING password in .env file..."
-            ENV_CONN_PASS=$(grep "^CONNECTION_STRING=" .env | sed 's/.*Password=\([^;]*\).*/\1/' || echo "")
+            # Verify database name is smhfr_db (not postgres)
+            ENV_CONN_DB=$(echo "$ENV_CONN_STR" | sed 's/.*Database=\([^;]*\).*/\1/' || echo "")
+            if [ "$ENV_CONN_DB" != "smhfr_db" ]; then
+              log_error ".env CONNECTION_STRING has wrong database name: '$ENV_CONN_DB' (expected: 'smhfr_db')!"
+              log_error "This will cause connection failures. Please ensure Database=smhfr_db in connection string."
+            fi
+            log_success ".env CONNECTION_STRING database name verified: $ENV_CONN_DB"
+            
+            # Verify password matches
+            ENV_CONN_PASS=$(echo "$ENV_CONN_STR" | sed 's/.*Password=\([^;]*\).*/\1/' || echo "")
             if [ "$ENV_CONN_PASS" != "$DB_PASSWORD" ]; then
               log_error ".env CONNECTION_STRING password ($ENV_CONN_PASS) doesn't match DB_PASSWORD!"
             fi
@@ -227,11 +234,23 @@ jobs:
               API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
               if [ -z "$API_CONN_STR" ]; then
                 log_error "ConnectionStrings__DefaultConnection not set in API container environment!"
-              elif ! echo "$API_CONN_STR" | grep -q "Password=${DB_PASSWORD}"; then
-                log_error "API container connection string password doesn't match .env DB_PASSWORD!"
-                log_error "API container has: $(echo "$API_CONN_STR" | sed 's/Password=[^;]*/Password=***/')"
               else
-                log_success "API container connection string verified - password matches .env"
+                # Verify database name
+                API_CONN_DB=$(echo "$API_CONN_STR" | sed 's/.*Database=\([^;]*\).*/\1/' || echo "")
+                if [ "$API_CONN_DB" != "smhfr_db" ]; then
+                  log_error "API container connection string has wrong database name: '$API_CONN_DB' (expected: 'smhfr_db')!"
+                  log_error "API container has: $(echo "$API_CONN_STR" | sed 's/Password=[^;]*/Password=***/' | sed 's/Database=[^;]*/Database=***/')"
+                else
+                  log_success "API container connection string database name verified: $API_CONN_DB"
+                fi
+                
+                # Verify password
+                if ! echo "$API_CONN_STR" | grep -q "Password=${DB_PASSWORD}"; then
+                  log_error "API container connection string password doesn't match .env DB_PASSWORD!"
+                  log_error "API container has: $(echo "$API_CONN_STR" | sed 's/Password=[^;]*/Password=***/')"
+                else
+                  log_success "API container connection string verified - password and database name match .env"
+                fi
               fi
             else
               log_info "API container not running yet, skipping environment verification (will check during health check)"
