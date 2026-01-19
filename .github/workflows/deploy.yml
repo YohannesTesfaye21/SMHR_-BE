@@ -55,7 +55,34 @@ jobs:
             docker compose down -v --remove-orphans || true
             docker volume rm smhfr-be_postgres_data 2>/dev/null || true
             docker compose --env-file .env up -d --build --force-recreate
+
+            # Wait for Postgres to accept connections
+            echo "⏳ Waiting for Postgres..."
+            for i in {1..30}; do
+              if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                echo "✅ Postgres is ready"
+                break
+              fi
+              sleep 2
+            done
+
+            # Verify password works
+            echo "🔐 Verifying database credentials..."
+            if ! docker compose exec -T -e PGPASSWORD="${{ secrets.DB_PASSWORD }}" postgres \
+              psql -U postgres -d postgres -c "SELECT 1" > /dev/null 2>&1; then
+              echo "❌ Database password verification failed"
+              docker compose logs postgres --tail=50
+              exit 1
+            fi
             
             # Wait and check health
-            sleep 30
-            curl -f http://localhost:8080/api/health && echo "Deployed successfully!" || echo "Health check failed"
+            echo "⏳ Waiting for API to be healthy..."
+            for i in {1..30}; do
+              if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
+                echo "✅ Deployed successfully!"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "❌ Health check failed"
+            docker compose logs api --tail=50
