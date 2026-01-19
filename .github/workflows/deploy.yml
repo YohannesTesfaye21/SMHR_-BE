@@ -75,9 +75,8 @@ jobs:
             echo "✅ .env file created"
 
             # -----------------------------
-            # 2️⃣ Reset and start postgres fresh
+            # 2️⃣ Start postgres (preserves data)
             # -----------------------------
-            docker compose down -v
             docker compose --env-file .env up -d postgres
             
             # Wait for postgres to be healthy
