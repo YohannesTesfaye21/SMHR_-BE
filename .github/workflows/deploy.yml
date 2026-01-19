@@ -77,8 +77,9 @@ jobs:
             echo "✅ .env file created"
 
             # -----------------------------
-            # 2️⃣ Build and start services
+            # 2️⃣ Stop and restart all services
             # -----------------------------
+            docker compose down -v
             docker compose --env-file .env up -d --build
             
             # Show container status
