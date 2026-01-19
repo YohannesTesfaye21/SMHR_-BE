@@ -36,9 +36,6 @@ public class AdminSeedService : IAdminSeedService
     {
         try
         {
-            // Ensure database is created
-            await _context.Database.MigrateAsync();
-
             // Create roles
             await CreateRolesAsync();
 
