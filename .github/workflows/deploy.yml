@@ -51,10 +51,8 @@ jobs:
               echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}"
             } > .env
             
-            # Reset and start fresh
-            docker compose down -v --remove-orphans || true
-            docker volume ls -q --filter label=com.docker.compose.project=smhfr-be | xargs -r docker volume rm
-            docker compose --env-file .env up -d --build --force-recreate
+            # Start Postgres (preserve data)
+            docker compose --env-file .env up -d postgres
 
             # Wait for Postgres to accept connections
             echo "⏳ Waiting for Postgres..."
@@ -66,14 +64,13 @@ jobs:
               sleep 2
             done
 
-            # Verify password works
-            echo "🔐 Verifying database credentials..."
-            if ! docker compose exec -T -e PGPASSWORD="${{ secrets.DB_PASSWORD }}" postgres \
-              psql -U postgres -d postgres -c "SELECT 1" > /dev/null 2>&1; then
-              echo "❌ Database password verification failed"
-              docker compose logs postgres --tail=50
-              exit 1
-            fi
+            # Enforce DB password inside Postgres (no data loss)
+            echo "🔐 Ensuring DB password matches secret..."
+            docker compose exec -T postgres psql -U postgres -c \
+              "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1
+
+            # Restart API only (keep postgres running)
+            docker compose --env-file .env up -d --build --no-deps api
             
             # Wait and check health
             echo "⏳ Waiting for API to be healthy..."
