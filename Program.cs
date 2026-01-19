@@ -12,6 +12,35 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Configure Kestrel for HTTPS
+builder.WebHost.ConfigureKestrel(options =>
+{
+    // HTTP endpoint
+    options.ListenAnyIP(8080);
+    
+    // HTTPS endpoint
+    var certPath = builder.Configuration["Kestrel:Certificates:Default:Path"] 
+        ?? Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path");
+    var certPassword = builder.Configuration["Kestrel:Certificates:Default:Password"] 
+        ?? Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Password");
+    
+    if (!string.IsNullOrEmpty(certPath) && File.Exists(certPath))
+    {
+        options.ListenAnyIP(8443, listenOptions =>
+        {
+            listenOptions.UseHttps(certPath, certPassword);
+        });
+    }
+    else
+    {
+        // Fallback: Use development certificate or create self-signed
+        options.ListenAnyIP(8443, listenOptions =>
+        {
+            listenOptions.UseHttps();
+        });
+    }
+});
+
 // Add services to the container.
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
@@ -251,13 +280,8 @@ app.UseSwaggerUI(c =>
     c.RoutePrefix = "swagger"; // Swagger UI at /swagger/index.html
 });
 
-// Only use HTTPS redirection when HTTPS port is explicitly configured
-// This avoids warnings when running locally without HTTPS
-var httpsPort = builder.Configuration["ASPNETCORE_HTTPS_PORT"];
-if (httpsPort != null && !app.Environment.IsDevelopment())
-{
-    app.UseHttpsRedirection();
-}
+// Enable HTTPS redirection
+app.UseHttpsRedirection();
 
 // Enable CORS - must be before UseAuthentication and UseAuthorization
 app.UseCors();
