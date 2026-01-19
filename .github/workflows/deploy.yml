@@ -68,9 +68,11 @@ jobs:
             echo "🔐 Ensuring DB password matches secret..."
             docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';"
             
-            # Verify password by testing connection (wait a bit for postgres to process ALTER USER)
-            echo "🔍 Waiting for password change to take effect..."
-            sleep 5
+            # Set up automatic password sync (runs every 5 minutes)
+            echo "⚙️ Setting up automatic password synchronization..."
+            chmod +x fix-password-on-start.sh
+            (crontab -l 2>/dev/null | grep -v "fix-password-on-start.sh"; echo "*/5 * * * * cd /opt/smhfr-be && ./fix-password-on-start.sh >> /var/log/smhfr-password-sync.log 2>&1") | crontab -
+            echo "✅ Password sync cron job installed"
             
             # Build and start API (keep postgres running)
             docker compose --env-file .env up -d --build --no-deps api
