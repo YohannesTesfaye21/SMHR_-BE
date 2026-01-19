@@ -98,7 +98,9 @@ jobs:
             log_info "Creating/updating .env file from GitHub secrets (before git reset)..."
             {
               echo "DB_PASSWORD=${DB_PASSWORD}"
-              echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;SSL Mode=Disable"
+              # Temporarily disable pooling to debug connection issues
+              # Pooling=false forces new connections each time, helping identify password/auth issues
+              echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=false;SSL Mode=Disable"
             } > .env
             chmod 600 .env  # Secure the file
             log_success ".env file created/updated with DB_PASSWORD from GitHub secrets"
@@ -118,7 +120,8 @@ jobs:
               log_error ".env file missing after git reset! Recreating..."
               {
                 echo "DB_PASSWORD=${DB_PASSWORD}"
-                echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=true;SSL Mode=Disable"
+                # Temporarily disable pooling to debug connection issues
+                echo "CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=false;SSL Mode=Disable"
               } > .env
               chmod 600 .env
             fi
@@ -356,15 +359,49 @@ jobs:
               CONTAINER_STATUS=$($COMPOSE_CMD ps api --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
               
               if [ "$CONTAINER_STATUS" = "exited" ] || [ "$CONTAINER_STATUS" = "dead" ]; then
-                echo "Container status: $CONTAINER_STATUS"
-                echo "=== API Logs (last 100 lines) ==="
-                $COMPOSE_CMD logs api --tail=100
-                log_error "API container stopped unexpectedly"
+                log_error "❌ API container stopped unexpectedly (status: $CONTAINER_STATUS)"
+                echo ""
+                echo "=== API Container Logs (last 50 lines) ==="
+                $COMPOSE_CMD logs api --tail=50
+                echo ""
+                echo "=== Connection String Debug ==="
+                API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "NOT FOUND")
+                if [ "$API_CONN_STR" != "NOT FOUND" ]; then
+                  log_info "Connection string found in container"
+                  echo "$API_CONN_STR" | sed 's/Password=[^;]*/Password=***/'
+                else
+                  log_error "Connection string NOT FOUND in container!"
+                fi
+                log_error "Deployment failed"
+                exit 1
+              fi
+              
+              # Check for password authentication errors in logs
+              if $COMPOSE_CMD logs api --tail=30 2>/dev/null | grep -q "28P01\|password authentication failed\|FATAL.*auth_failed"; then
+                log_error "❌ Password authentication error detected!"
+                echo ""
+                echo "=== Password Authentication Error Details ==="
+                $COMPOSE_CMD logs api --tail=50 | grep -A 3 -B 3 "28P01\|password authentication\|FATAL" || true
+                echo ""
+                log_info "Checking connection string in API container..."
+                API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
+                if [ -n "$API_CONN_STR" ]; then
+                  API_CONN_PASS=$(echo "$API_CONN_STR" | sed -n 's/.*Password=\([^;]*\).*/\1/p' || echo "")
+                  log_info "  API password length: ${#API_CONN_PASS}"
+                  log_info "  Expected password length: ${#DB_PASSWORD}"
+                  if [ "$API_CONN_PASS" != "$DB_PASSWORD" ]; then
+                    log_error "  ❌ Password mismatch confirmed!"
+                    log_error "  API password starts with: ${API_CONN_PASS:0:5}***"
+                    log_error "  Expected starts with: ${DB_PASSWORD:0:5}***"
+                  fi
+                fi
+                log_error "Deployment failed - password authentication error"
+                exit 1
               fi
               
               # Check health endpoint
               if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
-                log_success "API is healthy"
+                log_success "✅ API is healthy"
                 break
               fi
               
@@ -373,18 +410,35 @@ jobs:
               # Show progress every 15 attempts
               if [ $((RETRY_COUNT % 15)) -eq 0 ]; then
                 log_info "Still waiting... (attempt $RETRY_COUNT/$MAX_RETRIES)"
-                $COMPOSE_CMD logs api --tail=10
+                echo "=== Recent API Logs ==="
+                $COMPOSE_CMD logs api --tail=15
+                echo ""
               fi
               
               sleep 2
             done
             
             if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-              echo "=== API Logs (last 150 lines) ==="
-              $COMPOSE_CMD logs api --tail=150
+              log_error "❌ API health check failed after timeout"
+              echo ""
+              echo "=== Final API Logs (last 100 lines) ==="
+              $COMPOSE_CMD logs api --tail=100
+              echo ""
               echo "=== Container Status ==="
               $COMPOSE_CMD ps
-              log_error "API health check failed after timeout"
+              echo ""
+              echo "=== Connection String Debug ==="
+              API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "NOT FOUND")
+              if [ "$API_CONN_STR" != "NOT FOUND" ]; then
+                log_info "Connection string in API container:"
+                echo "$API_CONN_STR" | sed 's/Password=[^;]*/Password=***/'
+              else
+                log_error "Connection string NOT FOUND in API container!"
+                log_info "Available environment variables:"
+                $COMPOSE_CMD exec -T api printenv | grep -i connection || log_info "No connection-related env vars found"
+              fi
+              log_error "Deployment failed - API did not become healthy"
+              exit 1
             fi
             
             log_success "Deployment successful!"

@@ -56,8 +56,84 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 // Configure PostgreSQL connection
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") 
-    ?? throw new InvalidOperationException("Connection string 'DefaultConnection' not found.");
+// IMPORTANT: We ONLY use environment variable - never appsettings.json for connection string
+// This ensures single source of truth and prevents password mismatches
+
+// Check environment variable first (this is what docker-compose.yml sets)
+var connectionString = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection") 
+    ?? Environment.GetEnvironmentVariable("ConnectionStrings:DefaultConnection"); // Fallback for different formats
+
+// If not in environment, check configuration (but this should not happen in production)
+if (string.IsNullOrWhiteSpace(connectionString))
+{
+    connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+    if (!string.IsNullOrWhiteSpace(connectionString))
+    {
+        Console.WriteLine("⚠️  WARNING: Using connection string from appsettings.json instead of environment variable!");
+        Console.WriteLine("⚠️  This is NOT recommended for production. Please set ConnectionStrings__DefaultConnection environment variable.");
+    }
+}
+
+// If connection string is still empty or null, throw a clear error
+if (string.IsNullOrWhiteSpace(connectionString))
+{
+    throw new InvalidOperationException(
+        "❌ Database connection string is missing or empty!\n" +
+        "   Please set the ConnectionStrings__DefaultConnection environment variable.\n" +
+        "   In Docker, this should be set via docker-compose.yml environment section.\n" +
+        "   Current environment variables:\n" +
+        $"   - ConnectionStrings__DefaultConnection: {(Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection") != null ? "SET" : "NOT SET")}\n" +
+        $"   - ConnectionStrings:DefaultConnection: {(Environment.GetEnvironmentVariable("ConnectionStrings:DefaultConnection") != null ? "SET" : "NOT SET")}");
+}
+
+// Determine connection string source for logging
+var connectionStringSource = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection") != null 
+    ? "Environment Variable (ConnectionStrings__DefaultConnection)" 
+    : Environment.GetEnvironmentVariable("ConnectionStrings:DefaultConnection") != null
+    ? "Environment Variable (ConnectionStrings:DefaultConnection)"
+    : "Configuration (appsettings.json - NOT RECOMMENDED)";
+
+// Log connection string source and details (without password for security)
+var connectionStringForLogging = connectionString;
+if (connectionString.Contains("Password="))
+{
+    var passwordIndex = connectionString.IndexOf("Password=");
+    var passwordEnd = connectionString.IndexOf(";", passwordIndex);
+    if (passwordEnd == -1) passwordEnd = connectionString.Length;
+    var passwordLength = passwordEnd - passwordIndex - 9; // "Password=" is 9 chars
+    connectionStringForLogging = connectionString.Substring(0, passwordIndex + 9) + "***" + connectionString.Substring(passwordEnd);
+}
+
+Console.WriteLine($"[DB Config] Connection string source: {connectionStringSource}");
+Console.WriteLine($"[DB Config] Connection string: {connectionStringForLogging}");
+
+// Validate connection string doesn't contain placeholder password
+if (connectionString.Contains("Password=CHANGEME") || connectionString.Contains("Password=;") || connectionString.Contains("Password=\"\""))
+{
+    throw new InvalidOperationException(
+        $"❌ Invalid database password detected in connection string!\n" +
+        $"   Source: {connectionStringSource}\n" +
+        $"   The connection string contains a placeholder or empty password.\n" +
+        $"   Please ensure ConnectionStrings__DefaultConnection environment variable is set correctly in docker-compose.yml");
+}
+
+// Extract password for validation (check if it's reasonable length)
+if (connectionString.Contains("Password="))
+{
+    var passwordStart = connectionString.IndexOf("Password=") + 9;
+    var passwordEnd = connectionString.IndexOf(";", passwordStart);
+    if (passwordEnd == -1) passwordEnd = connectionString.Length;
+    var password = connectionString.Substring(passwordStart, passwordEnd - passwordStart);
+    
+    if (password.Length < 3)
+    {
+        throw new InvalidOperationException(
+            $"❌ Database password is too short or invalid!\n" +
+            $"   Source: {connectionStringSource}\n" +
+            $"   Password length: {password.Length}\n" +
+            $"   Please ensure ConnectionStrings__DefaultConnection environment variable has a valid password.");
+    }
+}
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(connectionString));
@@ -198,12 +274,34 @@ using (var scope = app.Services.CreateScope())
     try
     {
         logger.LogInformation("Applying database migrations...");
+        
+        // Test connection before migrating
+        if (!db.Database.CanConnect())
+        {
+            logger.LogError("❌ Cannot connect to database before migrations!");
+            logger.LogError("   This usually indicates a connection string or authentication issue.");
+            throw new InvalidOperationException("Cannot connect to database. Check connection string and credentials.");
+        }
+        
         db.Database.Migrate();
         logger.LogInformation("✅ Database migrations applied successfully");
     }
+    catch (Npgsql.NpgsqlException ex) when (ex.SqlState == "28P01")
+    {
+        logger.LogError(ex, "❌ Database password authentication failed!");
+        logger.LogError("   SQL State: {SqlState}", ex.SqlState);
+        logger.LogError("   This indicates the password in the connection string does not match PostgreSQL.");
+        logger.LogError("   Please verify ConnectionStrings__DefaultConnection environment variable.");
+        throw;
+    }
     catch (Exception ex)
     {
-        logger.LogError(ex, "Failed to apply database migrations");
+        logger.LogError(ex, "❌ Failed to apply database migrations");
+        logger.LogError("   Exception type: {ExceptionType}", ex.GetType().Name);
+        if (ex.InnerException != null)
+        {
+            logger.LogError("   Inner exception: {InnerException}", ex.InnerException.Message);
+        }
         throw;
     }
 
