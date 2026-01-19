@@ -77,29 +77,9 @@ jobs:
             echo "✅ .env file created"
 
             # -----------------------------
-            # 2️⃣ Start Postgres first
+            # 2️⃣ Build and start all services
             # -----------------------------
-            docker compose --env-file .env up -d postgres
-
-            echo "⏳ Waiting for Postgres to be healthy..."
-            MAX_RETRIES=30
-            RETRY=0
-            until docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; do
-              ((RETRY++))
-              if [ $RETRY -ge $MAX_RETRIES ]; then
-                echo "❌ Postgres failed to start"
-                docker compose logs postgres --tail=50
-                exit 1
-              fi
-              sleep 2
-            done
-            echo "✅ Postgres is ready"
-
-            # -----------------------------
-            # 3️⃣ Build and start API
-            # -----------------------------
-            docker compose build api
-            docker compose --env-file .env up -d --no-deps --force-recreate api
+            docker compose --env-file .env up -d --build
 
             # -----------------------------
             # 4️⃣ Wait for API to be healthy
