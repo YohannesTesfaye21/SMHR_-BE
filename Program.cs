@@ -277,6 +277,11 @@ using (var scope = app.Services.CreateScope())
     
     try
     {
+        // Clear connection pool on startup to ensure no stale connections with wrong password
+        // This prevents the 5-10 minute password mismatch issue
+        Npgsql.NpgsqlConnection.ClearAllPools();
+        logger.LogInformation("✅ Connection pool cleared on startup");
+        
         // Initialize database (connection test + migrations)
         var dbInitService = scope.ServiceProvider.GetRequiredService<IDatabaseInitializationService>();
         await dbInitService.InitializeAsync();
