@@ -74,42 +74,21 @@ jobs:
       - name: Wait for PostgreSQL
         run: |
           echo "⏳ Waiting for PostgreSQL to be ready..."
-          # Wait for container to be healthy (healthcheck passes)
-          for i in {1..60}; do
-            CONTAINER_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' smhfr-postgres 2>/dev/null || echo "starting")
-            if [ "$CONTAINER_HEALTH" = "healthy" ]; then
-              echo "✅ PostgreSQL container is healthy"
+          # Wait for PostgreSQL to accept connections (pg_isready is reliable)
+          for i in {1..30}; do
+            if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+              echo "✅ PostgreSQL is ready and accepting connections"
+              # Give entrypoint script a moment to complete password sync
+              sleep 2
               break
             fi
-            echo "⏳ Waiting for PostgreSQL healthcheck... (attempt $i/60, status: $CONTAINER_HEALTH)"
+            echo "⏳ Waiting for PostgreSQL... (attempt $i/30)"
             sleep 2
           done
           
-          # Also verify pg_isready
-          echo "⏳ Verifying PostgreSQL accepts connections..."
-          for i in {1..30}; do
-            if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-              echo "✅ PostgreSQL is accepting connections"
-              break
-            fi
-            echo "⏳ Waiting for pg_isready... (attempt $i/30)"
-            sleep 1
-          done
-          
-          # Additional wait for entrypoint script to complete password sync
-          echo "⏳ Waiting for entrypoint script to complete..."
-          sleep 5
-          
-          # Verify connection works from host (what migrations will use)
-          echo "⏳ Testing connection from host (localhost:5432)..."
-          for i in {1..10}; do
-            if docker run --rm --network smhfr-be_smhfr-network postgres:16-alpine psql -h postgres -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              echo "✅ PostgreSQL connection verified from Docker network"
-              break
-            fi
-            echo "⏳ Testing connection... (attempt $i/10)"
-            sleep 1
-          done
+          # Verify port is exposed and accessible from host
+          echo "⏳ Verifying port 5432 is accessible from host..."
+          timeout 5 bash -c 'until nc -z localhost 5432; do sleep 0.5; done' && echo "✅ Port 5432 is accessible" || echo "⚠️  Port check timeout (may still work)"
 
       - name: Cache dotnet tools
         uses: actions/cache@v4

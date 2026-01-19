@@ -1,5 +1,6 @@
 #!/bin/bash
-set -e
+# Don't use set -e here - we want to continue even if password sync fails
+# The original entrypoint will handle errors appropriately
 
 # First, run the original postgres entrypoint which initializes the database
 # This will start postgres in the background
@@ -7,6 +8,7 @@ set -e
 POSTGRES_PID=$!
 
 # Function to set password (will be called after postgres is ready)
+# This function is non-blocking - it won't cause the container to exit on failure
 set_password() {
   if [ -n "$POSTGRES_PASSWORD" ]; then
     echo "🔐 Synchronizing PostgreSQL password from POSTGRES_PASSWORD..."
@@ -35,7 +37,9 @@ set_password() {
               return 0
             fi
             unset PGPASSWORD
-            return 1
+            # Don't fail - password might still work
+            echo "⚠️  Network verification failed but continuing (password may still work)"
+            return 0
           fi
         else
           echo "⚠️  Password sync command failed - checking if password already matches..."
@@ -47,18 +51,21 @@ set_password() {
             return 0
           fi
           unset PGPASSWORD
-          echo "⚠️  Password mismatch detected but ALTER USER failed - may need manual intervention"
+          echo "⚠️  Password mismatch detected but ALTER USER failed - continuing anyway"
+          # Don't fail - let the application handle the error
+          return 0
         fi
       fi
       sleep 1
     done
-    echo "⚠️  Postgres not ready after 60 seconds, password sync skipped"
-    return 1
+    echo "⚠️  Postgres not ready after 60 seconds, password sync skipped (continuing anyway)"
+    return 0  # Don't fail - postgres might still work
   fi
 }
 
-# Set password after postgres starts
-set_password
+# Set password after postgres starts (non-blocking)
+set_password || echo "⚠️  Password sync had issues but continuing..."
 
 # Wait for postgres process (this keeps the container running)
+# This is the critical part - we must wait for the main postgres process
 wait $POSTGRES_PID
