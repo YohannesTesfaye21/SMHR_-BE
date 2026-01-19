@@ -13,28 +13,41 @@ set_password() {
     for i in {1..60}; do
       if pg_isready -U postgres > /dev/null 2>&1; then
         # Postgres is ready, set the password
-        # Use PGPASSWORD environment variable to avoid password prompt issues
-        export PGPASSWORD="${POSTGRES_PASSWORD:-postgres}"
+        # Use Unix socket connection (no -h flag) - this uses peer/trust auth, no password needed
+        # This works even if the volume has a different password stored
         if psql -U postgres -c "ALTER USER postgres WITH PASSWORD '$POSTGRES_PASSWORD';" > /dev/null 2>&1; then
           echo "✅ Password synchronized successfully"
-          # Verify password works
-          if psql -U postgres -c "SELECT 1;" > /dev/null 2>&1; then
-            echo "✅ Password verification successful"
+          # Verify password works with network connection (what API will use)
+          export PGPASSWORD="$POSTGRES_PASSWORD"
+          if psql -h localhost -U postgres -c "SELECT 1;" > /dev/null 2>&1; then
+            echo "✅ Password verification successful (network connection works)"
             unset PGPASSWORD
             return 0
           else
-            echo "⚠️  Password set but verification failed"
+            echo "⚠️  Password set but network verification failed - may need to wait for postgres to reload"
+            unset PGPASSWORD
+            # Wait a bit and retry
+            sleep 2
+            export PGPASSWORD="$POSTGRES_PASSWORD"
+            if psql -h localhost -U postgres -c "SELECT 1;" > /dev/null 2>&1; then
+              echo "✅ Password verification successful after retry"
+              unset PGPASSWORD
+              return 0
+            fi
             unset PGPASSWORD
             return 1
           fi
         else
-          echo "⚠️  Password sync attempted (may already be correct or database not ready)"
-          unset PGPASSWORD
-          # Try to verify current password works
-          if psql -U postgres -c "SELECT 1;" > /dev/null 2>&1; then
-            echo "✅ Current password works correctly"
+          echo "⚠️  Password sync command failed - checking if password already matches..."
+          # Try to verify current password works (test with new password via network)
+          export PGPASSWORD="$POSTGRES_PASSWORD"
+          if psql -h localhost -U postgres -c "SELECT 1;" > /dev/null 2>&1; then
+            echo "✅ Current password already matches POSTGRES_PASSWORD"
+            unset PGPASSWORD
             return 0
           fi
+          unset PGPASSWORD
+          echo "⚠️  Password mismatch detected but ALTER USER failed - may need manual intervention"
         fi
       fi
       sleep 1

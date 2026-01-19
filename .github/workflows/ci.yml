@@ -68,18 +68,47 @@ jobs:
 
       - name: Start PostgreSQL
         run: |
-          docker compose up -d postgres
+          docker compose --env-file .env up -d postgres
+          docker compose ps
 
       - name: Wait for PostgreSQL
         run: |
-          echo "Waiting for PostgreSQL to be ready..."
-          for i in {1..30}; do
-            if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-              echo "✅ PostgreSQL is ready"
+          echo "⏳ Waiting for PostgreSQL to be ready..."
+          # Wait for container to be healthy (healthcheck passes)
+          for i in {1..60}; do
+            CONTAINER_HEALTH=$(docker inspect --format='{{.State.Health.Status}}' smhfr-postgres 2>/dev/null || echo "starting")
+            if [ "$CONTAINER_HEALTH" = "healthy" ]; then
+              echo "✅ PostgreSQL container is healthy"
               break
             fi
-            echo "⏳ Waiting for PostgreSQL... (attempt $i/30)"
+            echo "⏳ Waiting for PostgreSQL healthcheck... (attempt $i/60, status: $CONTAINER_HEALTH)"
             sleep 2
+          done
+          
+          # Also verify pg_isready
+          echo "⏳ Verifying PostgreSQL accepts connections..."
+          for i in {1..30}; do
+            if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+              echo "✅ PostgreSQL is accepting connections"
+              break
+            fi
+            echo "⏳ Waiting for pg_isready... (attempt $i/30)"
+            sleep 1
+          done
+          
+          # Additional wait for entrypoint script to complete password sync
+          echo "⏳ Waiting for entrypoint script to complete..."
+          sleep 5
+          
+          # Verify connection works from host (what migrations will use)
+          echo "⏳ Testing connection from host (localhost:5432)..."
+          for i in {1..10}; do
+            if docker run --rm --network smhfr-be_smhfr-network postgres:16-alpine psql -h postgres -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+              echo "✅ PostgreSQL connection verified from Docker network"
+              break
+            fi
+            echo "⏳ Testing connection... (attempt $i/10)"
+            sleep 1
           done
 
       - name: Cache dotnet tools
@@ -99,9 +128,29 @@ jobs:
 
       - name: Run migrations
         env:
-          ConnectionStrings__DefaultConnection: Host=localhost;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ env.DB_PASSWORD }}
+          ConnectionStrings__DefaultConnection: "Host=localhost;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ env.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable"
         run: |
-          dotnet ef database update --project SMHFR_BE.csproj
+          echo "🔍 Verifying PostgreSQL is accessible on localhost:5432..."
+          # Check if port is listening
+          timeout 10 bash -c 'until nc -z localhost 5432; do sleep 1; done' && echo "✅ Port 5432 is listening" || echo "⚠️  Port check timeout (may still work)"
+          
+          echo "🔄 Running database migrations..."
+          dotnet ef database update --project SMHFR_BE.csproj || {
+            echo "❌ Migration failed!"
+            echo "📊 Docker containers status:"
+            docker compose ps
+            echo ""
+            echo "📋 PostgreSQL container logs:"
+            docker compose logs postgres --tail=50
+            echo ""
+            echo "🔍 Checking port binding:"
+            docker port smhfr-postgres 2>/dev/null || echo "Could not check port binding"
+            echo ""
+            echo "🔍 Testing connection from inside container:"
+            docker compose exec -T postgres psql -U postgres -c "SELECT version();" || echo "Connection test failed"
+            exit 1
+          }
+          echo "✅ Migrations completed successfully"
 
       - name: Start API service
         run: |
