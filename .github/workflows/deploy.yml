@@ -61,94 +61,32 @@ jobs:
             # Start Postgres (preserve data)
             docker compose --env-file .env up -d postgres
 
-            # Wait for Postgres to accept connections
-            echo "⏳ Waiting for Postgres..."
-            for i in {1..30}; do
-              if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                echo "✅ Postgres is ready"
-                break
-              fi
-              sleep 2
-            done
+            # Wait for Postgres to be ready
+            echo "⏳ Waiting for Postgres to be ready..."
+            timeout 60 bash -c 'until docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; do sleep 1; done'
+            echo "✅ Postgres is ready"
 
-            # Make entrypoint script executable (it sets password on EVERY container start)
-            echo "🔐 Setting up password synchronization via entrypoint..."
-            chmod +x docker-entrypoint-postgres.sh
-            
-            # Restart postgres to trigger entrypoint script (sets password from POSTGRES_PASSWORD env var)
-            echo "🔄 Restarting Postgres - entrypoint will set password automatically..."
-            docker compose restart postgres || docker compose --env-file .env up -d postgres
-            
-            # Wait for postgres to be ready (entrypoint sets password during startup)
-            echo "⏳ Waiting for Postgres to start and set password..."
-            for j in {1..60}; do
-              if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                echo "✅ Postgres is ready (password should be set by entrypoint)"
-                break
-              fi
-              sleep 1
-            done
-            
-            # Wait for entrypoint script to complete password sync
-            echo "⏳ Waiting for entrypoint script to complete password synchronization..."
-            sleep 5
-            
-            # Check entrypoint script logs to see if password sync completed
-            echo "📋 Checking entrypoint script status..."
-            docker compose logs postgres | grep -i "password\|synchronized\|verification" | tail -5 || true
-            
-            # CRITICAL: Directly set password as fallback (entrypoint may have failed)
-            echo "🔐 Setting PostgreSQL password directly (fallback method)..."
-            PASSWORD_SET=0
-            for attempt in {1..10}; do
-              # Try to set password using docker exec (connects via Unix socket, no password needed)
-              if docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1; then
-                echo "✅ Password set successfully via direct method (attempt $attempt)"
-                PASSWORD_SET=1
-                # Restart postgres to ensure password change is fully applied
-                echo "🔄 Restarting Postgres to apply password change..."
-                docker compose restart postgres
-                sleep 5
-                # Wait for postgres to be ready after restart
-                for wait_attempt in {1..30}; do
-                  if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                    echo "✅ Postgres is ready after password change"
-                    break
-                  fi
-                  sleep 1
-                done
-                break
-              fi
-              echo "⏳ Password set attempt $attempt/10 failed, retrying..."
-              sleep 2
-            done
-            
-            if [ $PASSWORD_SET -eq 0 ]; then
-              echo "⚠️  WARNING: Could not set password via direct method, but continuing..."
-            fi
-            
-            # Verify password works by testing connection - RETRY until it works
-            echo "🔍 Verifying password works (this may take a few attempts)..."
-            PASSWORD_VERIFIED=0
-            for k in {1..20}; do
-              if docker compose run --rm --no-deps api sh -c "apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq postgresql-client >/dev/null 2>&1 && PGPASSWORD='${{ secrets.DB_PASSWORD }}' psql -h postgres -U postgres -d smhfr_db -c 'SELECT 1;' >/dev/null 2>&1"; then
-                echo "✅ Password verification successful (attempt $k)"
-                PASSWORD_VERIFIED=1
-                break
-              fi
-              echo "⏳ Password verification failed, retrying... (attempt $k/20)"
-              sleep 2
-            done
-            
-            if [ $PASSWORD_VERIFIED -eq 0 ]; then
-              echo "❌ ERROR: Password verification failed after 20 attempts!"
-              echo "📋 PostgreSQL logs:"
-              docker compose logs postgres --tail=50
-              echo "📋 Testing connection from inside postgres container:"
-              docker compose exec -T postgres psql -U postgres -c "SELECT version();" || echo "Connection test failed"
-              echo "❌ Cannot proceed - password mismatch detected"
+            # Set password directly (Unix socket connection, no password needed)
+            echo "🔐 Setting PostgreSQL password..."
+            if ! docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';"; then
+              echo "❌ ERROR: Failed to set PostgreSQL password"
+              docker compose logs postgres --tail=20
               exit 1
             fi
+            echo "✅ Password set successfully"
+            
+            # Give PostgreSQL a moment to process the password change
+            sleep 2
+
+            # Verify password works
+            echo "🔍 Verifying password..."
+            if ! PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+              echo "❌ ERROR: Password verification failed"
+              echo "📋 PostgreSQL logs:"
+              docker compose logs postgres --tail=30
+              exit 1
+            fi
+            echo "✅ Password verified"
             
             # Stop API if running to clear connection pool
             docker compose stop api 2>/dev/null || true
