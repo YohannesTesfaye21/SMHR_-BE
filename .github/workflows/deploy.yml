@@ -84,11 +84,19 @@ jobs:
             for j in {1..60}; do
               if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
                 echo "✅ Postgres is ready (password should be set by entrypoint)"
-                sleep 2  # Give entrypoint time to complete password sync
+                sleep 3  # Give entrypoint time to complete password sync
                 break
               fi
               sleep 1
             done
+            
+            # Verify password works by testing connection with the password from .env
+            echo "🔍 Verifying password works..."
+            if docker compose run --rm --no-deps api sh -c "apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq postgresql-client >/dev/null 2>&1 && PGPASSWORD='${{ secrets.DB_PASSWORD }}' psql -h postgres -U postgres -d smhfr_db -c 'SELECT 1;' >/dev/null 2>&1"; then
+              echo "✅ Password verification successful"
+            else
+              echo "⚠️  Password verification failed - but continuing (entrypoint may still be syncing)"
+            fi
             
             # Stop API if running to clear connection pool
             docker compose stop api 2>/dev/null || true

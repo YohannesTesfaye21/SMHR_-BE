@@ -13,17 +13,34 @@ set_password() {
     for i in {1..60}; do
       if pg_isready -U postgres > /dev/null 2>&1; then
         # Postgres is ready, set the password
-        psql -U postgres -c "ALTER USER postgres WITH PASSWORD '$POSTGRES_PASSWORD';" > /dev/null 2>&1 && {
+        # Use PGPASSWORD environment variable to avoid password prompt issues
+        export PGPASSWORD="${POSTGRES_PASSWORD:-postgres}"
+        if psql -U postgres -c "ALTER USER postgres WITH PASSWORD '$POSTGRES_PASSWORD';" > /dev/null 2>&1; then
           echo "✅ Password synchronized successfully"
-          return 0
-        } || {
-          echo "⚠️  Password sync attempted (may already be correct)"
-          return 0
-        }
+          # Verify password works
+          if psql -U postgres -c "SELECT 1;" > /dev/null 2>&1; then
+            echo "✅ Password verification successful"
+            unset PGPASSWORD
+            return 0
+          else
+            echo "⚠️  Password set but verification failed"
+            unset PGPASSWORD
+            return 1
+          fi
+        else
+          echo "⚠️  Password sync attempted (may already be correct or database not ready)"
+          unset PGPASSWORD
+          # Try to verify current password works
+          if psql -U postgres -c "SELECT 1;" > /dev/null 2>&1; then
+            echo "✅ Current password works correctly"
+            return 0
+          fi
+        fi
       fi
       sleep 1
     done
     echo "⚠️  Postgres not ready after 60 seconds, password sync skipped"
+    return 1
   fi
 }
 
