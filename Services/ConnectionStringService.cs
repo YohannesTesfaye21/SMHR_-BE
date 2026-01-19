@@ -39,34 +39,27 @@ public class ConnectionStringService : IConnectionStringService
             return _cachedConnectionString;
         }
 
-        // ALWAYS prioritize environment variable over persisted file (for Docker/production)
-        // Environment variable is the source of truth and may have been updated
+        // ALWAYS prioritize environment variable over persisted file
+        // In Docker, environment variable is always set and is the source of truth
         var envConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
             ?? Environment.GetEnvironmentVariable("ConnectionStrings:DefaultConnection");
 
         if (!string.IsNullOrWhiteSpace(envConnectionString))
         {
-            _logger.LogInformation("✅ Using connection string from environment variable (highest priority)");
+            _logger.LogInformation("✅ Using connection string from environment variable");
             _cachedConnectionString = envConnectionString;
             
-            // Persist it for next time (update persisted file with new value)
+            // Update persisted file with current value
             try
             {
                 PersistConnectionString(envConnectionString);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "⚠️  Failed to persist connection string from environment variable");
+                _logger.LogWarning(ex, "⚠️  Failed to persist connection string");
             }
             
             return envConnectionString;
-        }
-        else
-        {
-            // Log why environment variable wasn't used (for debugging)
-            var hasEnvVar1 = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection") != null;
-            var hasEnvVar2 = Environment.GetEnvironmentVariable("ConnectionStrings:DefaultConnection") != null;
-            _logger.LogWarning("⚠️  Environment variable ConnectionStrings__DefaultConnection not found. Has double underscore: {Has1}, Has colon: {Has2}. Falling back to persisted file.", hasEnvVar1, hasEnvVar2);
         }
 
         // Fallback to persisted file (for local development when env var not set)

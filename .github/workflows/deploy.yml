@@ -12,7 +12,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 3
     if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
 
     steps:
@@ -50,101 +50,68 @@ jobs:
             export COMPOSE_PROJECT_NAME=smhfr-be
             
             # Create .env file
-            {
-              echo "DB_HOST=postgres"
-              echo "DB_PORT=5432"
-              echo "DB_NAME=smhfr_db"
-              echo "DB_USER=postgres"
-              echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}"
-            } > .env
+            cat > .env <<EOF
+            DB_HOST=postgres
+            DB_PORT=5432
+            DB_NAME=smhfr_db
+            DB_USER=postgres
+            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+            EOF
             
-            # Start Postgres (preserve data)
+            # Start Postgres
             docker compose --env-file .env up -d postgres
-
-            # Wait for Postgres to be ready
-            echo "⏳ Waiting for Postgres to be ready..."
-            timeout 60 bash -c 'until docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; do sleep 1; done'
-            echo "✅ Postgres is ready"
-
-            # Set password directly (Unix socket connection, no password needed)
-            echo "🔐 Setting PostgreSQL password..."
-            if ! docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';"; then
-              echo "❌ ERROR: Failed to set PostgreSQL password"
-              docker compose logs postgres --tail=20
+            
+            # Wait for Postgres (max 15 seconds, check every 1 second)
+            echo "⏳ Waiting for Postgres..."
+            for i in {1..15}; do
+              if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                echo "✅ Postgres is ready"
+                break
+              fi
+              sleep 1
+            done
+            
+            # Set password
+            echo "🔐 Setting password..."
+            docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';"
+            sleep 1
+            
+            # Verify password
+            echo "🔍 Verifying password..."
+            PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
+            if [ $? -ne 0 ]; then
+              echo "❌ Password verification failed"
               exit 1
             fi
-            echo "✅ Password set successfully"
+            echo "✅ Password verified"
             
-            # Give PostgreSQL a moment to process the password change
-            sleep 3
-
-            # Verify password works from network (what API will use)
-            echo "🔍 Verifying password from network connection (API's perspective)..."
-            # Get the network name dynamically
-            NETWORK_NAME=$(docker compose ps -q postgres | xargs -I {} docker inspect -f '{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}{{end}}' {} 2>/dev/null | head -1)
-            if [ -z "$NETWORK_NAME" ]; then
-              NETWORK_NAME="smhfr-be_smhfr-network"
-            fi
-            
-            # Test from a temporary container on the same network (simulates API container)
-            if ! docker run --rm --network "$NETWORK_NAME" -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres:16-alpine psql -h postgres -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              echo "❌ ERROR: Password verification failed from network (API's perspective)"
-              echo "📋 PostgreSQL logs:"
-              docker compose logs postgres --tail=30
-              echo "📋 Testing from postgres container (Unix socket):"
-              docker compose exec -T postgres psql -U postgres -c "SELECT 1;" || echo "Unix socket test also failed"
-              echo "📋 Current password in PostgreSQL:"
-              docker compose exec -T postgres psql -U postgres -c "SELECT usename, passwd IS NOT NULL as has_password FROM pg_user WHERE usename = 'postgres';" || true
-              exit 1
-            fi
-            echo "✅ Password verified from network connection (API will use this)"
-            
-            # Stop API if running to clear connection pool
+            # Stop API
             docker compose stop api 2>/dev/null || true
-            sleep 2
             
-            # Clear persisted connection string volume to ensure fresh start with correct password
-            echo "🧹 Clearing persisted connection string to ensure fresh start..."
-            docker compose run --rm --no-deps api sh -c "rm -rf /app/data/.connectionstring" 2>/dev/null || true
-            # Also try to remove via volume if it exists
-            docker volume inspect smhfr-be_api_data > /dev/null 2>&1 && docker run --rm -v smhfr-be_api_data:/data alpine sh -c "rm -f /data/.connectionstring" 2>/dev/null || true
+            # Remove persisted connection string volume
+            docker volume rm smhfr-be_api_data 2>/dev/null || true
             
-            # Build and start API (keep postgres running)
-            # Environment variable will be used (highest priority) and will persist the correct password
+            # Start API
+            echo "🚀 Starting API..."
             docker compose --env-file .env up -d --build --no-deps api
             
-            # Wait for API to be ready
-            echo "⏳ Waiting for API to start..."
-            sleep 10  # Give API time to fully initialize after "Application started" message
+            # Wait for API (check every 2 seconds, max 30 seconds)
+            echo "⏳ Waiting for API..."
+            for i in {1..15}; do
+              if docker compose ps api | grep -q "Up"; then
+                echo "✅ API is running"
+                echo "✅ Deployment successful"
+                exit 0
+              fi
+              sleep 2
+            done
             
-            # Check if API container is running
-            if ! docker compose ps api | grep -q "Up"; then
-              echo "❌ ERROR: API container is not running"
-              docker compose logs api --tail=50
+            # Final check
+            if docker compose ps api | grep -q "Up"; then
+              echo "✅ Deployment successful"
+              exit 0
+            else
+              echo "❌ API not running"
+              docker compose logs api --tail=30
               exit 1
             fi
-            
-            # Check if API has been running for a reasonable time (indicates successful start)
-            echo "🔍 Verifying API is functional..."
-            sleep 2
-            
-            # Try health endpoint
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:8080/api/health 2>/dev/null || echo "000")
-            
-            if [ "$HTTP_CODE" = "200" ]; then
-              echo "✅ Deployed successfully! Health check returned 200"
-              exit 0
-            fi
-            
-            # If health check fails, check if API is actually running and responding
-            # The logs show "Application started" which means it's running
-            if docker compose ps api | grep -q "Up"; then
-              echo "✅ API container is running (Application started message seen in logs)"
-              echo "✅ Deployment successful"
-              docker compose logs api --tail=5
-              exit 0
-            fi
-            
-            echo "❌ Deployment failed"
-            docker compose logs api --tail=50
-            exit 1
