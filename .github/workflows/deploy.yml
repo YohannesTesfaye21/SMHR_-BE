@@ -41,9 +41,19 @@ jobs:
           script: |
             cd /opt/smhfr-be
             
-            # Rebuild and restart API only (keep postgres running)
-            docker compose --env-file .env up -d --build --no-deps api
+            # Create .env file
+            {
+              echo "DB_HOST=postgres"
+              echo "DB_PORT=5432"
+              echo "DB_NAME=smhfr_db"
+              echo "DB_USER=postgres"
+              echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}"
+            } > .env
+            
+            # Reset and start fresh
+            docker compose down -v
+            docker compose --env-file .env up -d --build
             
             # Wait and check health
-            sleep 20
+            sleep 30
             curl -f http://localhost:8080/api/health && echo "Deployed successfully!" || echo "Health check failed"
