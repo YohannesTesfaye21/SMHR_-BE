@@ -75,12 +75,10 @@ jobs:
             echo "✅ .env file created"
 
             # -----------------------------
-            # 2️⃣ Reset database if requested
+            # 2️⃣ Reset database (one-time fix)
             # -----------------------------
-            if [ "${{ github.event.inputs.reset_database }}" = "true" ]; then
-              echo "⚠️ Resetting database (all data will be deleted)..."
-              docker compose down -v
-            fi
+            echo "⚠️ Resetting database to fix password..."
+            docker compose down -v
 
             # -----------------------------
             # 3️⃣ Start postgres

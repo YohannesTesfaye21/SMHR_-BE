@@ -4,6 +4,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: smhfr-postgres
+    restart: always
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
@@ -29,6 +30,7 @@ services:
       dockerfile: Dockerfile
     image: smhfr-api:latest
     container_name: smhfr-api
+    restart: always
     ports:
       - "8080:8080"
       - "8081:8081"
