@@ -13,6 +13,8 @@ using System.Text;
 // IMPORTANT: Check certificate BEFORE WebApplication.CreateBuilder
 // Kestrel configuration is loaded during CreateBuilder, so we must clear env var before that
 var certPathEnv = Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path");
+var certPasswordEnv = Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Password");
+
 if (!string.IsNullOrEmpty(certPathEnv))
 {
     Console.WriteLine($"[HTTPS Config] Certificate path from env: {certPathEnv}");
@@ -25,7 +27,28 @@ if (!string.IsNullOrEmpty(certPathEnv))
     }
     else
     {
-        Console.WriteLine($"✅ Certificate file found: {certPathEnv}");
+        // Verify certificate can be loaded (password check)
+        try
+        {
+            var certPassword = certPasswordEnv ?? string.Empty;
+            using var cert = new System.Security.Cryptography.X509Certificates.X509Certificate2(certPathEnv, certPassword);
+            Console.WriteLine($"✅ Certificate file found and password is correct: {certPathEnv}");
+        }
+        catch (System.Security.Cryptography.CryptographicException ex) when (ex.Message.Contains("password", StringComparison.OrdinalIgnoreCase))
+        {
+            // Password is wrong - clear env vars and disable HTTPS
+            Environment.SetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path", null);
+            Environment.SetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Password", null);
+            Console.WriteLine($"⚠️  Certificate password is incorrect. HTTPS disabled. Using HTTP only.");
+            Console.WriteLine($"   Set CERT_PASSWORD=dev-cert-password in .env file to enable HTTPS.");
+        }
+        catch (Exception ex)
+        {
+            // Other certificate errors - clear env vars and disable HTTPS
+            Environment.SetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path", null);
+            Environment.SetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Password", null);
+            Console.WriteLine($"⚠️  Certificate error: {ex.Message}. HTTPS disabled. Using HTTP only.");
+        }
     }
 }
 
