@@ -71,15 +71,21 @@ jobs:
               sleep 2
             done
 
-            # Enforce DB password inside Postgres BEFORE starting API
-            echo "🔐 Ensuring DB password matches secret..."
-            docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';"
+            # CRITICAL: Set password in Postgres to match .env file
+            # This must happen BEFORE API starts, and the password is stored in the volume
+            echo "🔐 Setting PostgreSQL password to match secret..."
+            for i in {1..10}; do
+              if docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" 2>/dev/null; then
+                echo "✅ Password set successfully"
+                sleep 3  # Give Postgres time to process the password change
+                break
+              fi
+              echo "⏳ Waiting for Postgres to accept commands (attempt $i/10)..."
+              sleep 2
+            done
             
-            # Set up automatic password sync (runs every 5 minutes)
-            echo "⚙️ Setting up automatic password synchronization..."
-            chmod +x fix-password-on-start.sh
-            (crontab -l 2>/dev/null | grep -v "fix-password-on-start.sh"; echo "*/5 * * * * cd /opt/smhfr-be && ./fix-password-on-start.sh >> /var/log/smhfr-password-sync.log 2>&1") | crontab -
-            echo "✅ Password sync cron job installed"
+            # Stop API if running to clear connection pool
+            docker compose stop api 2>/dev/null || true
             
             # Build and start API (keep postgres running)
             docker compose --env-file .env up -d --build --no-deps api
