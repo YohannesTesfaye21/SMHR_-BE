@@ -97,6 +97,36 @@ jobs:
             echo "📋 Checking entrypoint script status..."
             docker compose logs postgres | grep -i "password\|synchronized\|verification" | tail -5 || true
             
+            # CRITICAL: Directly set password as fallback (entrypoint may have failed)
+            echo "🔐 Setting PostgreSQL password directly (fallback method)..."
+            PASSWORD_SET=0
+            for attempt in {1..10}; do
+              # Try to set password using docker exec (connects via Unix socket, no password needed)
+              if docker compose exec -T postgres psql -U postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1; then
+                echo "✅ Password set successfully via direct method (attempt $attempt)"
+                PASSWORD_SET=1
+                # Restart postgres to ensure password change is fully applied
+                echo "🔄 Restarting Postgres to apply password change..."
+                docker compose restart postgres
+                sleep 5
+                # Wait for postgres to be ready after restart
+                for wait_attempt in {1..30}; do
+                  if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
+                    echo "✅ Postgres is ready after password change"
+                    break
+                  fi
+                  sleep 1
+                done
+                break
+              fi
+              echo "⏳ Password set attempt $attempt/10 failed, retrying..."
+              sleep 2
+            done
+            
+            if [ $PASSWORD_SET -eq 0 ]; then
+              echo "⚠️  WARNING: Could not set password via direct method, but continuing..."
+            fi
+            
             # Verify password works by testing connection - RETRY until it works
             echo "🔍 Verifying password works (this may take a few attempts)..."
             PASSWORD_VERIFIED=0
@@ -113,7 +143,9 @@ jobs:
             if [ $PASSWORD_VERIFIED -eq 0 ]; then
               echo "❌ ERROR: Password verification failed after 20 attempts!"
               echo "📋 PostgreSQL logs:"
-              docker compose logs postgres --tail=30
+              docker compose logs postgres --tail=50
+              echo "📋 Testing connection from inside postgres container:"
+              docker compose exec -T postgres psql -U postgres -c "SELECT version();" || echo "Connection test failed"
               echo "❌ Cannot proceed - password mismatch detected"
               exit 1
             fi
