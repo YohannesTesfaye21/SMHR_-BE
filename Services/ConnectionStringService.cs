@@ -61,6 +61,13 @@ public class ConnectionStringService : IConnectionStringService
             
             return envConnectionString;
         }
+        else
+        {
+            // Log why environment variable wasn't used (for debugging)
+            var hasEnvVar1 = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection") != null;
+            var hasEnvVar2 = Environment.GetEnvironmentVariable("ConnectionStrings:DefaultConnection") != null;
+            _logger.LogWarning("⚠️  Environment variable ConnectionStrings__DefaultConnection not found. Has double underscore: {Has1}, Has colon: {Has2}. Falling back to persisted file.", hasEnvVar1, hasEnvVar2);
+        }
 
         // Fallback to persisted file (for local development when env var not set)
         if (File.Exists(_persistenceFilePath))

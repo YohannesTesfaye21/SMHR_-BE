@@ -116,11 +116,22 @@ jobs:
             # Wait and check health
             echo "⏳ Waiting for API to be healthy..."
             for i in {1..30}; do
-              if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
-                echo "✅ Deployed successfully!"
+              HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/health 2>/dev/null || echo "000")
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "✅ Deployed successfully! Health check returned 200"
                 exit 0
+              fi
+              if [ $i -eq 1 ]; then
+                echo "⏳ API starting... (HTTP $HTTP_CODE)"
+              elif [ $((i % 5)) -eq 0 ]; then
+                echo "⏳ Still waiting... (attempt $i/30, HTTP $HTTP_CODE)"
+                docker compose logs api --tail=10
               fi
               sleep 2
             done
-            echo "❌ Health check failed"
+            echo "❌ Health check failed after 30 attempts"
+            echo "📋 API logs:"
             docker compose logs api --tail=50
+            echo "📋 Testing health endpoint directly:"
+            curl -v http://localhost:8080/api/health || echo "curl failed"
+            exit 1
