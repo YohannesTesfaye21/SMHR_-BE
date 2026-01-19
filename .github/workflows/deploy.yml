@@ -105,6 +105,9 @@ jobs:
                 # Check if it's still running (didn't crash)
                 if docker compose ps api | grep -q "Up"; then
                   echo "✅ Deployment successful"
+                  # Check HTTPS configuration
+                  echo "🔍 Checking HTTPS configuration..."
+                  docker compose logs api | grep -E "(HTTPS|Certificate|cert)" | tail -10 || echo "No HTTPS logs found"
                   exit 0
                 else
                   echo "❌ API container crashed after startup"

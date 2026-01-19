@@ -90,7 +90,22 @@ builder.WebHost.ConfigureKestrel(options =>
             Console.WriteLine($"⚠️  Error loading certificate: {ex.Message}. HTTPS disabled. Using HTTP only.");
         }
     }
-    // If no certificate path or file doesn't exist, HTTPS is not enabled (HTTP only)
+    else
+    {
+        Console.WriteLine("[HTTPS Config] No certificate path configured. HTTPS disabled. Using HTTP only.");
+    }
+    
+    // Log all configured endpoints
+    Console.WriteLine("[Kestrel Config] Configured endpoints:");
+    Console.WriteLine("  - HTTP: http://0.0.0.0:8080");
+    if (!string.IsNullOrEmpty(certPath) && File.Exists(certPath))
+    {
+        Console.WriteLine("  - HTTPS: https://0.0.0.0:8443");
+    }
+    else
+    {
+        Console.WriteLine("  - HTTPS: Not configured");
+    }
 });
 
 // Add services to the container.
