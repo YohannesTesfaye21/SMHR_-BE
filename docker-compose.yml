@@ -41,12 +41,9 @@ services:
         condition: service_healthy
     networks:
       - smhfr-network
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/api/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+    # Healthcheck removed - not needed after deployment
+    # Deployment script verifies health once during deployment
+    # If you need monitoring, use external tools (Prometheus, etc.) instead
 
 volumes:
   postgres_data:
