@@ -15,11 +15,25 @@ var builder = WebApplication.CreateBuilder(args);
 // Check certificate before Kestrel configuration loads
 // Clear environment variable if certificate file doesn't exist to prevent Kestrel auto-loading
 var certPathEnv = Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path");
-if (!string.IsNullOrEmpty(certPathEnv) && !File.Exists(certPathEnv))
+if (!string.IsNullOrEmpty(certPathEnv))
 {
-    // Clear the environment variable to prevent Kestrel from trying to load non-existent certificate
-    Environment.SetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path", null);
-    Console.WriteLine($"⚠️  Certificate file not found: {certPathEnv}. HTTPS disabled. Using HTTP only.");
+    Console.WriteLine($"[HTTPS Config] Certificate path from env: {certPathEnv}");
+    Console.WriteLine($"[HTTPS Config] Certificate file exists: {File.Exists(certPathEnv)}");
+    
+    if (!File.Exists(certPathEnv))
+    {
+        // Clear the environment variable to prevent Kestrel from trying to load non-existent certificate
+        Environment.SetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path", null);
+        Console.WriteLine($"⚠️  Certificate file not found: {certPathEnv}. HTTPS disabled. Using HTTP only.");
+    }
+    else
+    {
+        Console.WriteLine($"✅ Certificate file found: {certPathEnv}");
+    }
+}
+else
+{
+    Console.WriteLine("[HTTPS Config] No certificate path configured. HTTPS disabled. Using HTTP only.");
 }
 
 // Configure Kestrel for HTTPS (optional)
