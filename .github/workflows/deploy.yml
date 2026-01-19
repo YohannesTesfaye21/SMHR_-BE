@@ -95,14 +95,24 @@ jobs:
             echo "🚀 Starting API..."
             docker compose --env-file .env up -d --build --no-deps api
             
-            # Wait for API (check every 2 seconds, max 30 seconds)
-            echo "⏳ Waiting for API..."
-            for i in {1..15}; do
+            # Wait for API container to be running (max 20 seconds)
+            echo "⏳ Waiting for API to start..."
+            for i in {1..10}; do
               if docker compose ps api | grep -q "Up"; then
-                echo "✅ API is running"
-                echo "✅ Deployment successful"
-                exit 0
+                echo "✅ API container is running"
+                # Give it a moment to initialize
+                sleep 3
+                # Check if it's still running (didn't crash)
+                if docker compose ps api | grep -q "Up"; then
+                  echo "✅ Deployment successful"
+                  exit 0
+                else
+                  echo "❌ API container crashed after startup"
+                  docker compose logs api --tail=30
+                  exit 1
+                fi
               fi
+              echo "⏳ Waiting for API... (attempt $i/10)"
               sleep 2
             done
             
@@ -111,7 +121,7 @@ jobs:
               echo "✅ Deployment successful"
               exit 0
             else
-              echo "❌ API not running"
-              docker compose logs api --tail=30
+              echo "❌ API not running after 20 seconds"
+              docker compose logs api --tail=50
               exit 1
             fi
