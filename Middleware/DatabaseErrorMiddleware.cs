@@ -55,11 +55,10 @@ public class DatabaseErrorMiddleware
                     var exception = (Exception?)pgEx ?? npgsqlEx!;
                     _logger.LogError(exception, "❌ Database connection error detected (SQL State: {SqlState}) at {Path}", sqlState ?? "N/A", context.Request.Path);
                     
-                    // Clear connection pool ONLY for connection/auth errors
+                    // Clear connection pool for connection/auth errors
                     try
                     {
                         NpgsqlConnection.ClearAllPools();
-                        _logger.LogInformation("✅ Connection pool cleared due to connection error (SQL State: {SqlState})", sqlState ?? "N/A");
                     }
                     catch (Exception clearEx)
                     {
