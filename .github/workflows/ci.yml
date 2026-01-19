@@ -58,10 +58,13 @@ jobs:
 
       - name: Create .env file for docker-compose
         run: |
-          cat > .env << EOF
-          DB_PASSWORD=${{ env.DB_PASSWORD }}
-          CONNECTION_STRING=Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ env.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Connection Lifetime=300;Command Timeout=30;SSL Mode=Disable
-          EOF
+          cat > .env <<EOF
+DB_HOST=postgres
+DB_PORT=5432
+DB_NAME=smhfr_db
+DB_USER=postgres
+DB_PASSWORD=${{ env.DB_PASSWORD }}
+EOF
 
       - name: Start PostgreSQL
         run: |

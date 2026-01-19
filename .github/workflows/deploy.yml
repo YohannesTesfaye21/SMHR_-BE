@@ -22,7 +22,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code
@@ -31,458 +31,120 @@ jobs:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.0
-        env:
-          DB_PASSWORD_SECRET: ${{ secrets.DB_PASSWORD }}
+      - name: Copy files to server
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: DB_PASSWORD_SECRET
+          source: "."
+          target: "/opt/smhfr-be"
+          strip_components: 0
+          exclude: |
+            .git
+            .github
+            **/bin
+            **/obj
+            **/.vs
+            **/.vscode
+            *.md
+            appsettings.Development.json
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             set -eo pipefail
+
             APP_DIR="/opt/smhfr-be"
-            REPO_URL="${{ github.repositoryUrl }}"
-            
-            # Helper function for error logging
-            log_error() {
-              echo "❌ ERROR: $1" >&2
-              exit 1
-            }
-            
-            log_info() {
-              echo "ℹ️  $1"
-            }
-            
-            log_success() {
-              echo "✅ $1"
-            }
-            
-            # Ensure Docker is installed
-            if ! command -v docker &> /dev/null; then
-              log_info "Installing Docker..."
-              curl -fsSL https://get.docker.com | sh
-              systemctl enable docker
-              systemctl start docker
-            fi
-            
-            # Ensure docker-compose is available
-            if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
-              log_info "Installing docker-compose..."
-              apt-get update && apt-get install -y docker-compose-plugin
-            fi
-            
-            # Use 'docker compose' if available, fallback to 'docker-compose'
-            COMPOSE_CMD="docker compose"
-            if ! $COMPOSE_CMD version &> /dev/null; then
-              COMPOSE_CMD="docker-compose"
-            fi
-            
-            # Ensure Git is installed
-            command -v git &> /dev/null || (apt-get update && apt-get install -y git)
-            
-            # Create application directory
-            mkdir -p "$APP_DIR"
-            cd "$APP_DIR" || log_error "Failed to change to $APP_DIR"
-            
-            # Get DB_PASSWORD from environment variable passed from GitHub secrets FIRST
-            # This must be done before git reset to preserve it
-            DB_PASSWORD="${DB_PASSWORD_SECRET:-}"
-            if [ -z "$DB_PASSWORD" ]; then
-              log_error "DB_PASSWORD_SECRET not provided! Please set DB_PASSWORD in GitHub secrets."
-            fi
-            
-            # Create/update .env file BEFORE git reset to ensure it persists
-            # .env is in .gitignore, so git reset won't delete it, but we recreate it anyway
-            log_info "Creating/updating .env file from GitHub secrets (before git reset)..."
-            # Build connection string with actual password value (not variable reference)
-            # Docker-compose does NOT expand variables inside .env file values
-            # So we must build the full connection string here with the actual password
-            CONNECTION_STRING_VALUE="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=false;SSL Mode=Disable"
-            {
-              echo "DB_PASSWORD=${DB_PASSWORD}"
-              echo "CONNECTION_STRING=${CONNECTION_STRING_VALUE}"
-            } > .env
-            chmod 600 .env  # Secure the file
-            
-            # Verify the connection string was written correctly (for debugging)
-            if grep -q "^CONNECTION_STRING=" .env; then
-              CONN_STR_FOR_LOG=$(grep "^CONNECTION_STRING=" .env | sed 's/Password=[^;]*/Password=***/')
-              log_info "Connection string format (password masked): $CONN_STR_FOR_LOG"
-              if echo "$CONN_STR_FOR_LOG" | grep -q "Password=\*\*\*"; then
-                log_success ".env file created/updated with DB_PASSWORD from GitHub secrets"
-              else
-                log_error "❌ Connection string missing Password= prefix!"
-                exit 1
-              fi
-            else
-              log_error "❌ Failed to write CONNECTION_STRING to .env file!"
-              exit 1
-            fi
-            
-            # Clone or update repository (AFTER .env is created)
-            if [ -d ".git" ]; then
-              log_info "Updating repository..."
-              git fetch origin
-              git reset --hard origin/main || git reset --hard origin/master
-            else
-              log_info "Cloning repository..."
-              git clone "$REPO_URL" . || log_error "Failed to clone repository"
-            fi
-            
-            # Verify .env file still exists after git reset (it should, since it's in .gitignore)
-            if [ ! -f ".env" ]; then
-              log_error ".env file missing after git reset! Recreating..."
-              # Rebuild connection string with actual password value
-              CONNECTION_STRING_VALUE="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${DB_PASSWORD};Pooling=false;SSL Mode=Disable"
-              {
-                echo "DB_PASSWORD=${DB_PASSWORD}"
-                echo "CONNECTION_STRING=${CONNECTION_STRING_VALUE}"
-              } > .env
-              chmod 600 .env
-              
-              # Verify it was created correctly
-              if ! grep -q "^CONNECTION_STRING=.*Password=" .env; then
-                log_error "❌ Recreated .env file is malformed - missing Password= in connection string!"
-                exit 1
-              fi
-              log_success ".env file recreated successfully"
-            fi
-            
-            # Verify docker-compose.yml exists
-            if [ ! -f "docker-compose.yml" ]; then
-              log_error "docker-compose.yml not found!"
-            fi
-            
-            # Build Docker image with cache
-            log_info "Building Docker image..."
-            $COMPOSE_CMD build api || log_error "Docker build failed"
-            
-            # Stop containers
-            log_info "Stopping containers..."
-            $COMPOSE_CMD down 2>/dev/null || true
-            
-            # Start PostgreSQL with .env (password comes from .env file)
-            log_info "Starting PostgreSQL..."
-            $COMPOSE_CMD --env-file .env up -d postgres || log_error "Failed to start PostgreSQL"
-            
-            # Wait for PostgreSQL to be ready
-            log_info "Waiting for PostgreSQL to be ready..."
+            cd "$APP_DIR"
+
+            # -----------------------------
+            # 1️⃣ Write .env from secrets
+            # -----------------------------
+            cat > .env <<EOF
+DB_HOST=postgres
+DB_PORT=5432
+DB_NAME=smhfr_db
+DB_USER=postgres
+DB_PASSWORD=${{ secrets.DB_PASSWORD }}
+EOF
+            chmod 600 .env
+
+            echo "✅ .env file created"
+
+            # -----------------------------
+            # 2️⃣ Start Postgres first
+            # -----------------------------
+            docker compose --env-file .env up -d postgres
+
+            echo "⏳ Waiting for Postgres to be healthy..."
             MAX_RETRIES=30
-            RETRY_COUNT=0
-            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              if $COMPOSE_CMD exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                log_success "PostgreSQL is ready"
-                break
+            RETRY=0
+            until docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; do
+              ((RETRY++))
+              if [ $RETRY -ge $MAX_RETRIES ]; then
+                echo "❌ Postgres failed to start"
+                docker compose logs postgres --tail=50
+                exit 1
               fi
-              RETRY_COUNT=$((RETRY_COUNT + 1))
               sleep 2
             done
-            
-            if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-              echo "PostgreSQL logs:"
-              $COMPOSE_CMD logs postgres --tail=50
-              log_error "PostgreSQL failed to start within timeout"
-            fi
-            
-            # Verify password matches - remove volume if not
-            sleep 2
-            log_info "Testing PostgreSQL connection with provided password..."
-            if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              log_info "Password mismatch detected. Recreating PostgreSQL with correct password..."
-              log_info "This will remove all existing data and recreate the database with the correct password."
-              $COMPOSE_CMD down -v
-              $COMPOSE_CMD --env-file .env up -d postgres
-              sleep 5
-              for i in {1..30}; do
-                if $COMPOSE_CMD exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                  log_success "PostgreSQL recreated with correct password"
-                  break
-                fi
-                sleep 2
-              done
-            else
-              log_success "PostgreSQL password verification successful"
-            fi
-            
-            # Verify that smhfr_db database exists (it should be created by POSTGRES_DB in docker-compose)
-            log_info "Verifying smhfr_db database exists..."
-            if ! $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d smhfr_db -c "SELECT 1;" > /dev/null 2>&1; then
-              log_info "Database smhfr_db not found. Creating it..."
-              if $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -c "CREATE DATABASE smhfr_db;" > /dev/null 2>&1; then
-                log_success "Database smhfr_db created"
-              else
-                log_error "Failed to create smhfr_db database. This might indicate a password issue."
-                log_info "Checking if we can connect to postgres database..."
-                if $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASSWORD" postgres psql -U postgres -d postgres -c "SELECT current_user;" 2>&1; then
-                  log_info "Connection to postgres database works, but smhfr_db creation failed"
-                else
-                  log_error "Cannot connect to PostgreSQL at all. Password mismatch confirmed."
-                fi
-                exit 1
-              fi
-            else
-              log_success "Database smhfr_db exists and is accessible"
-            fi
-            
-            # Test the exact connection string that the API will use
-            log_info "Testing connection string that API will use..."
-            ENV_CONN_STR=$(grep "^CONNECTION_STRING=" .env | cut -d'=' -f2- || echo "")
-            if [ -n "$ENV_CONN_STR" ]; then
-              # Extract connection details for testing
-              DB_HOST=$(echo "$ENV_CONN_STR" | sed 's/.*Host=\([^;]*\).*/\1/' || echo "")
-              DB_PORT=$(echo "$ENV_CONN_STR" | sed 's/.*Port=\([^;]*\).*/\1/' || echo "")
-              DB_NAME=$(echo "$ENV_CONN_STR" | sed 's/.*Database=\([^;]*\).*/\1/' || echo "")
-              DB_USER=$(echo "$ENV_CONN_STR" | sed 's/.*Username=\([^;]*\).*/\1/' || echo "")
-              DB_PASS=$(echo "$ENV_CONN_STR" | sed 's/.*Password=\([^;]*\).*/\1/' || echo "")
-              
-              log_info "Connection string details: Host=$DB_HOST, Port=$DB_PORT, Database=$DB_NAME, Username=$DB_USER"
-              
-              # Test connection - since we're testing from within the postgres container,
-              # we need to connect to localhost instead of the service name
-              if [ "$DB_HOST" = "postgres" ]; then
-                TEST_HOST="localhost"
-              else
-                TEST_HOST="$DB_HOST"
-              fi
-              
-              log_info "Testing connection to $TEST_HOST:$DB_PORT/$DB_NAME as $DB_USER..."
-              if $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASS" postgres psql -h "$TEST_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" > /dev/null 2>&1; then
-                log_success "API connection string test successful"
-              else
-                log_error "API connection string test failed!"
-                log_error "The API will not be able to connect to the database with this connection string."
-                log_error "Connection details: Host=$DB_HOST, Port=$DB_PORT, Database=$DB_NAME, Username=$DB_USER"
-                
-                # Additional debugging
-                log_info "Attempting to diagnose the issue..."
-                log_info "Testing direct connection to smhfr_db..."
-                if $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASS" postgres psql -U "$DB_USER" -d "$DB_NAME" -c "SELECT current_user, current_database();" 2>&1; then
-                  log_info "Direct connection works, issue might be with host resolution"
-                else
-                  log_error "Direct connection also fails. Password or user issue confirmed."
-                fi
-                exit 1
-              fi
-            else
-              log_error "CONNECTION_STRING not found in .env file for testing"
-            fi
-            
-            # Verify .env CONNECTION_STRING contains correct password and database name before starting API
-            log_info "Verifying CONNECTION_STRING in .env file..."
-            ENV_CONN_STR=$(grep "^CONNECTION_STRING=" .env | cut -d'=' -f2- || echo "")
-            if [ -z "$ENV_CONN_STR" ]; then
-              log_error "CONNECTION_STRING not found in .env file!"
-              exit 1
-            fi
-            
-            # CRITICAL: Verify Password= is present in connection string
-            if ! echo "$ENV_CONN_STR" | grep -q "Password="; then
-              log_error "❌ CONNECTION_STRING is malformed - missing 'Password=' prefix!"
-              log_error "Connection string should have: Password=xxx"
-              log_error "Current connection string (masked): $(echo "$ENV_CONN_STR" | sed 's/Password=[^;]*/Password=***/')"
-              log_error "This will cause database connection failures!"
-              exit 1
-            fi
-            log_success "✅ CONNECTION_STRING contains Password= prefix"
-            
-            # Verify database name is smhfr_db (not postgres)
-            ENV_CONN_DB=$(echo "$ENV_CONN_STR" | sed -n 's/.*Database=\([^;]*\).*/\1/p' || echo "")
-            if [ "$ENV_CONN_DB" != "smhfr_db" ]; then
-              log_error ".env CONNECTION_STRING has wrong database name: '$ENV_CONN_DB' (expected: 'smhfr_db')!"
-              log_error "This will cause connection failures. Please ensure Database=smhfr_db in connection string."
-              exit 1
-            fi
-            log_success ".env CONNECTION_STRING database name verified: $ENV_CONN_DB"
-            
-            # Verify password matches
-            ENV_CONN_PASS=$(echo "$ENV_CONN_STR" | sed -n 's/.*Password=\([^;]*\).*/\1/p' || echo "")
-            if [ -z "$ENV_CONN_PASS" ]; then
-              log_error "❌ Could not extract password from CONNECTION_STRING!"
-              log_error "Connection string format might be incorrect"
-              exit 1
-            fi
-            if [ "$ENV_CONN_PASS" != "$DB_PASSWORD" ]; then
-              log_error ".env CONNECTION_STRING password doesn't match DB_PASSWORD!"
-              log_error "Expected password length: ${#DB_PASSWORD}"
-              log_error "Actual password length: ${#ENV_CONN_PASS}"
-              exit 1
-            fi
-            log_success ".env CONNECTION_STRING password verified (length: ${#ENV_CONN_PASS})"
-            
-            # Remove API container to ensure fresh start with correct environment variables
-            log_info "Removing API container to ensure fresh environment..."
-            $COMPOSE_CMD rm -f api 2>/dev/null || true
-            
-            # Show environment variables that will be passed to API
-            log_info "Environment variables for API container:"
-            echo "DB_PASSWORD=${DB_PASSWORD:0:3}***"
-            echo "CONNECTION_STRING=$(echo "$ENV_CONN_STR" | sed 's/Password=[^;]*/Password=***/')"
-            
-            # Start API service with fresh container and correct .env
-            log_info "Starting API service with .env file..."
-            $COMPOSE_CMD --env-file .env up -d --no-deps --force-recreate api || log_error "Failed to start API service"
-            
-            # Wait for API container to be running before checking environment
-            log_info "Waiting for API container to start..."
-            sleep 10
+            echo "✅ Postgres is ready"
+
+            # -----------------------------
+            # 3️⃣ Build and start API
+            # -----------------------------
+            docker compose build api
+            docker compose --env-file .env up -d --no-deps --force-recreate api
+
+            # -----------------------------
+            # 4️⃣ Wait for API container and verify logs
+            # -----------------------------
+            echo "⏳ Waiting for API to start..."
             MAX_WAIT=20
             WAIT_COUNT=0
-            while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
-              CONTAINER_STATE=$($COMPOSE_CMD ps api --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
-              if [ "$CONTAINER_STATE" = "running" ]; then
-                log_success "API container is running"
+            until [ $WAIT_COUNT -ge $MAX_WAIT ]; do
+              STATE=$(docker compose ps api --format json | grep -o '"State":"[^"]*"' | cut -d'"' -f4)
+              if [ "$STATE" = "running" ]; then
+                echo "✅ API container is running"
                 break
               fi
-              WAIT_COUNT=$((WAIT_COUNT + 1))
-              sleep 1
+              ((WAIT_COUNT++))
+              sleep 2
             done
-            
-            # Verify API container has correct connection string environment variable
-            log_info "Verifying API container connection string environment variable..."
-            CONTAINER_STATE=$($COMPOSE_CMD ps api --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
-            
-            if [ "$CONTAINER_STATE" = "running" ]; then
-              # Get the connection string from the API container
-              API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
-              
-              if [ -z "$API_CONN_STR" ]; then
-                log_error "❌ ConnectionStrings__DefaultConnection not set in API container environment!"
-                log_info "Checking all environment variables in API container..."
-                $COMPOSE_CMD exec -T api printenv | grep -i connection || log_info "No connection-related env vars found"
-                log_info "Checking .env file contents..."
-                cat .env | sed 's/Password=[^;]*/Password=***/' || log_info "Could not read .env file"
-              else
-                log_info "✅ Connection string found in API container"
-                
-                # Extract and verify components
-                API_CONN_DB=$(echo "$API_CONN_STR" | sed -n 's/.*Database=\([^;]*\).*/\1/p' || echo "")
-                API_CONN_USER=$(echo "$API_CONN_STR" | sed -n 's/.*Username=\([^;]*\).*/\1/p' || echo "")
-                API_CONN_HOST=$(echo "$API_CONN_STR" | sed -n 's/.*Host=\([^;]*\).*/\1/p' || echo "")
-                API_CONN_PASS=$(echo "$API_CONN_STR" | sed -n 's/.*Password=\([^;]*\).*/\1/p' || echo "")
-                
-                log_info "API Connection Details:"
-                log_info "  Host: $API_CONN_HOST"
-                log_info "  Database: $API_CONN_DB"
-                log_info "  Username: $API_CONN_USER"
-                log_info "  Password: ${API_CONN_PASS:0:3}*** (length: ${#API_CONN_PASS})"
-                
-                # Verify database name
-                if [ "$API_CONN_DB" != "smhfr_db" ]; then
-                  log_error "❌ API container has wrong database name: '$API_CONN_DB' (expected: 'smhfr_db')!"
-                else
-                  log_success "✅ Database name correct: $API_CONN_DB"
-                fi
-                
-                # Verify password matches
-                if [ "$API_CONN_PASS" != "$DB_PASSWORD" ]; then
-                  log_error "❌ API container password doesn't match DB_PASSWORD!"
-                  log_error "  Expected password length: ${#DB_PASSWORD}"
-                  log_error "  Actual password length: ${#API_CONN_PASS}"
-                  log_error "  Expected starts with: ${DB_PASSWORD:0:5}***"
-                  log_error "  Actual starts with: ${API_CONN_PASS:0:5}***"
-                else
-                  log_success "✅ Password matches"
-                fi
-              fi
-            else
-              log_info "⚠️  API container state: $CONTAINER_STATE (not running yet)"
-              log_info "Container logs:"
-              $COMPOSE_CMD logs api --tail=20
+
+            if [ "$STATE" != "running" ]; then
+              echo "❌ API failed to start"
+              docker compose logs api --tail=50
+              exit 1
             fi
+
+            # -----------------------------
+            # 5️⃣ Verify API health
+            # -----------------------------
+            echo "⏳ Waiting for API to be healthy..."
+            MAX_HEALTH_RETRIES=30
+            HEALTH_RETRY=0
+            HEALTHY=false
             
-            # Wait for API to be healthy
-            log_info "Waiting for API to be healthy..."
-            MAX_RETRIES=90
-            RETRY_COUNT=0
-            sleep 10  # Give API initial startup time
-            
-            while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-              # Check if container is still running
-              CONTAINER_STATUS=$($COMPOSE_CMD ps api --format json 2>/dev/null | grep -o '"State":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
-              
-              if [ "$CONTAINER_STATUS" = "exited" ] || [ "$CONTAINER_STATUS" = "dead" ]; then
-                log_error "❌ API container stopped unexpectedly (status: $CONTAINER_STATUS)"
-                echo ""
-                echo "=== API Container Logs (last 50 lines) ==="
-                $COMPOSE_CMD logs api --tail=50
-                echo ""
-                echo "=== Connection String Debug ==="
-                API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "NOT FOUND")
-                if [ "$API_CONN_STR" != "NOT FOUND" ]; then
-                  log_info "Connection string found in container"
-                  echo "$API_CONN_STR" | sed 's/Password=[^;]*/Password=***/'
-                else
-                  log_error "Connection string NOT FOUND in container!"
-                fi
-                log_error "Deployment failed"
-                exit 1
-              fi
-              
-              # Check for password authentication errors in logs
-              if $COMPOSE_CMD logs api --tail=30 2>/dev/null | grep -q "28P01\|password authentication failed\|FATAL.*auth_failed"; then
-                log_error "❌ Password authentication error detected!"
-                echo ""
-                echo "=== Password Authentication Error Details ==="
-                $COMPOSE_CMD logs api --tail=50 | grep -A 3 -B 3 "28P01\|password authentication\|FATAL" || true
-                echo ""
-                log_info "Checking connection string in API container..."
-                API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "")
-                if [ -n "$API_CONN_STR" ]; then
-                  API_CONN_PASS=$(echo "$API_CONN_STR" | sed -n 's/.*Password=\([^;]*\).*/\1/p' || echo "")
-                  log_info "  API password length: ${#API_CONN_PASS}"
-                  log_info "  Expected password length: ${#DB_PASSWORD}"
-                  if [ "$API_CONN_PASS" != "$DB_PASSWORD" ]; then
-                    log_error "  ❌ Password mismatch confirmed!"
-                    log_error "  API password starts with: ${API_CONN_PASS:0:5}***"
-                    log_error "  Expected starts with: ${DB_PASSWORD:0:5}***"
-                  fi
-                fi
-                log_error "Deployment failed - password authentication error"
-                exit 1
-              fi
-              
-              # Check health endpoint
-              if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
-                log_success "✅ API is healthy"
+            until [ $HEALTH_RETRY -ge $MAX_HEALTH_RETRIES ]; do
+              if docker compose exec -T api curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
+                HEALTHY=true
+                echo "✅ API health check passed"
                 break
               fi
-              
-              RETRY_COUNT=$((RETRY_COUNT + 1))
-              
-              # Show progress every 15 attempts
-              if [ $((RETRY_COUNT % 15)) -eq 0 ]; then
-                log_info "Still waiting... (attempt $RETRY_COUNT/$MAX_RETRIES)"
-                echo "=== Recent API Logs ==="
-                $COMPOSE_CMD logs api --tail=15
-                echo ""
-              fi
-              
+              ((HEALTH_RETRY++))
               sleep 2
             done
             
-            if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-              log_error "❌ API health check failed after timeout"
-              echo ""
-              echo "=== Final API Logs (last 100 lines) ==="
-              $COMPOSE_CMD logs api --tail=100
-              echo ""
-              echo "=== Container Status ==="
-              $COMPOSE_CMD ps
-              echo ""
-              echo "=== Connection String Debug ==="
-              API_CONN_STR=$($COMPOSE_CMD exec -T api printenv ConnectionStrings__DefaultConnection 2>/dev/null || echo "NOT FOUND")
-              if [ "$API_CONN_STR" != "NOT FOUND" ]; then
-                log_info "Connection string in API container:"
-                echo "$API_CONN_STR" | sed 's/Password=[^;]*/Password=***/'
-              else
-                log_error "Connection string NOT FOUND in API container!"
-                log_info "Available environment variables:"
-                $COMPOSE_CMD exec -T api printenv | grep -i connection || log_info "No connection-related env vars found"
-              fi
-              log_error "Deployment failed - API did not become healthy"
+            if [ "$HEALTHY" != "true" ]; then
+              echo "❌ API health check failed"
+              docker compose logs api --tail=100
               exit 1
             fi
-            
-            log_success "Deployment successful!"
+
+            echo "✅ Deployment completed successfully!"

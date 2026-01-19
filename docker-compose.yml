@@ -5,8 +5,8 @@ services:
     image: postgres:16-alpine
     container_name: smhfr-postgres
     environment:
-      POSTGRES_DB: smhfr_db
-      POSTGRES_USER: postgres
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_INITDB_ARGS: "-E UTF8"
       PGDATA: /var/lib/postgresql/data/pgdata
@@ -15,7 +15,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -33,17 +33,21 @@ services:
       - "8080:8080"
       - "8081:8081"
     environment:
-      - ASPNETCORE_ENVIRONMENT=Development
-      - ASPNETCORE_URLS=http://+:8080
-      - ConnectionStrings__DefaultConnection=${CONNECTION_STRING}
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: >
+        Host=${DB_HOST};
+        Port=${DB_PORT};
+        Database=${DB_NAME};
+        Username=${DB_USER};
+        Password=${DB_PASSWORD};
+        Pooling=false;
+        SSL Mode=Disable
     depends_on:
       postgres:
         condition: service_healthy
     networks:
       - smhfr-network
-    # Healthcheck removed - not needed after deployment
-    # Deployment script verifies health once during deployment
-    # If you need monitoring, use external tools (Prometheus, etc.) instead
 
 volumes:
   postgres_data:
