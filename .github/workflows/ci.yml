@@ -104,12 +104,18 @@ jobs:
       - name: Wait for API health
         run: |
           echo "Waiting for API to be healthy..."
-          timeout 120 bash -c 'until curl -f http://localhost:8080/api/health 2>/dev/null; do sleep 2; done'
-
-      - name: Verify deployment
-        run: |
-          echo "✅ API is healthy"
-          curl -s http://localhost:8080/api/health | jq '.' || echo "Health check response received"
+          sleep 10
+          for i in {1..30}; do
+            if curl -f http://localhost:8080/api/health > /dev/null 2>&1; then
+              echo "✅ API is healthy"
+              exit 0
+            fi
+            echo "Attempt $i/30: API not ready yet, waiting..."
+            sleep 3
+          done
+          echo "❌ API health check failed after 90 seconds"
+          docker compose logs api --tail=50
+          exit 1
 
       - name: View logs on failure
         if: failure()
