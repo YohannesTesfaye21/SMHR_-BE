@@ -77,11 +77,8 @@ jobs:
             echo "✅ .env file created"
 
             # -----------------------------
-            # 2️⃣ Reset and start fresh
+            # 2️⃣ Build and start services
             # -----------------------------
-            # NOTE: This removes the database volume. Remove this line once password is stable.
-            docker compose down -v
-            
             docker compose --env-file .env up -d --build
             
             # Show container status
