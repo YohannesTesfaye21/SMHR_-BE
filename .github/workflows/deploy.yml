@@ -212,13 +212,30 @@ jobs:
               
               log_info "Connection string details: Host=$DB_HOST, Port=$DB_PORT, Database=$DB_NAME, Username=$DB_USER"
               
-              # Test connection using the exact same parameters the API will use
-              if $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASS" postgres psql -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" > /dev/null 2>&1; then
+              # Test connection - since we're testing from within the postgres container,
+              # we need to connect to localhost instead of the service name
+              if [ "$DB_HOST" = "postgres" ]; then
+                TEST_HOST="localhost"
+              else
+                TEST_HOST="$DB_HOST"
+              fi
+              
+              log_info "Testing connection to $TEST_HOST:$DB_PORT/$DB_NAME as $DB_USER..."
+              if $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASS" postgres psql -h "$TEST_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" -c "SELECT 1;" > /dev/null 2>&1; then
                 log_success "API connection string test successful"
               else
                 log_error "API connection string test failed!"
                 log_error "The API will not be able to connect to the database with this connection string."
                 log_error "Connection details: Host=$DB_HOST, Port=$DB_PORT, Database=$DB_NAME, Username=$DB_USER"
+                
+                # Additional debugging
+                log_info "Attempting to diagnose the issue..."
+                log_info "Testing direct connection to smhfr_db..."
+                if $COMPOSE_CMD exec -T -e PGPASSWORD="$DB_PASS" postgres psql -U "$DB_USER" -d "$DB_NAME" -c "SELECT current_user, current_database();" 2>&1; then
+                  log_info "Direct connection works, issue might be with host resolution"
+                else
+                  log_error "Direct connection also fails. Password or user issue confirmed."
+                fi
                 exit 1
               fi
             else
