@@ -36,10 +36,7 @@ services:
       - "8443:8443"
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ASPNETCORE_URLS: http://+:8080;https://+:8443
-      ASPNETCORE_HTTPS_PORT: 8443
-      ASPNETCORE_Kestrel__Certificates__Default__Path: /app/certs/cert.pfx
-      ASPNETCORE_Kestrel__Certificates__Default__Password: ${CERT_PASSWORD:-}
+      ASPNETCORE_URLS: http://+:8080
       ConnectionStrings__DefaultConnection: "Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};Pooling=true;Minimum Pool Size=5;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable"
     volumes:
       - api_data:/app/data

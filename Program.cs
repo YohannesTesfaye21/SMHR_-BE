@@ -12,13 +12,13 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Configure Kestrel for HTTPS
+// Configure Kestrel for HTTPS (optional)
 builder.WebHost.ConfigureKestrel(options =>
 {
-    // HTTP endpoint
+    // HTTP endpoint (always available)
     options.ListenAnyIP(8080);
     
-    // HTTPS endpoint
+    // HTTPS endpoint (only if certificate is available)
     var certPath = builder.Configuration["Kestrel:Certificates:Default:Path"] 
         ?? Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path");
     var certPassword = builder.Configuration["Kestrel:Certificates:Default:Password"] 
@@ -26,19 +26,20 @@ builder.WebHost.ConfigureKestrel(options =>
     
     if (!string.IsNullOrEmpty(certPath) && File.Exists(certPath))
     {
+        // Use provided certificate
         options.ListenAnyIP(8443, listenOptions =>
         {
-            listenOptions.UseHttps(certPath, certPassword);
+            if (!string.IsNullOrEmpty(certPassword))
+            {
+                listenOptions.UseHttps(certPath, certPassword);
+            }
+            else
+            {
+                listenOptions.UseHttps(certPath);
+            }
         });
     }
-    else
-    {
-        // Fallback: Use development certificate or create self-signed
-        options.ListenAnyIP(8443, listenOptions =>
-        {
-            listenOptions.UseHttps();
-        });
-    }
+    // If no certificate, HTTPS is not enabled (HTTP only)
 });
 
 // Add services to the container.
@@ -280,8 +281,13 @@ app.UseSwaggerUI(c =>
     c.RoutePrefix = "swagger"; // Swagger UI at /swagger/index.html
 });
 
-// Enable HTTPS redirection
-app.UseHttpsRedirection();
+// Enable HTTPS redirection only if HTTPS is configured
+var certPath = builder.Configuration["Kestrel:Certificates:Default:Path"] 
+    ?? Environment.GetEnvironmentVariable("ASPNETCORE_Kestrel__Certificates__Default__Path");
+if (!string.IsNullOrEmpty(certPath) && File.Exists(certPath))
+{
+    app.UseHttpsRedirection();
+}
 
 // Enable CORS - must be before UseAuthentication and UseAuthorization
 app.UseCors();
