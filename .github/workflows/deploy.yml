@@ -76,23 +76,41 @@ jobs:
             echo "✅ Password set successfully"
             
             # Give PostgreSQL a moment to process the password change
-            sleep 2
+            sleep 3
 
-            # Verify password works
-            echo "🔍 Verifying password..."
-            if ! PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
-              echo "❌ ERROR: Password verification failed"
+            # Verify password works from network (what API will use)
+            echo "🔍 Verifying password from network connection (API's perspective)..."
+            # Get the network name dynamically
+            NETWORK_NAME=$(docker compose ps -q postgres | xargs -I {} docker inspect -f '{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}{{end}}' {} 2>/dev/null | head -1)
+            if [ -z "$NETWORK_NAME" ]; then
+              NETWORK_NAME="smhfr-be_smhfr-network"
+            fi
+            
+            # Test from a temporary container on the same network (simulates API container)
+            if ! docker run --rm --network "$NETWORK_NAME" -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres:16-alpine psql -h postgres -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
+              echo "❌ ERROR: Password verification failed from network (API's perspective)"
               echo "📋 PostgreSQL logs:"
               docker compose logs postgres --tail=30
+              echo "📋 Testing from postgres container (Unix socket):"
+              docker compose exec -T postgres psql -U postgres -c "SELECT 1;" || echo "Unix socket test also failed"
+              echo "📋 Current password in PostgreSQL:"
+              docker compose exec -T postgres psql -U postgres -c "SELECT usename, passwd IS NOT NULL as has_password FROM pg_user WHERE usename = 'postgres';" || true
               exit 1
             fi
-            echo "✅ Password verified"
+            echo "✅ Password verified from network connection (API will use this)"
             
             # Stop API if running to clear connection pool
             docker compose stop api 2>/dev/null || true
             sleep 2
             
+            # Clear persisted connection string volume to ensure fresh start with correct password
+            echo "🧹 Clearing persisted connection string to ensure fresh start..."
+            docker compose run --rm --no-deps api sh -c "rm -rf /app/data/.connectionstring" 2>/dev/null || true
+            # Also try to remove via volume if it exists
+            docker volume inspect smhfr-be_api_data > /dev/null 2>&1 && docker run --rm -v smhfr-be_api_data:/data alpine sh -c "rm -f /data/.connectionstring" 2>/dev/null || true
+            
             # Build and start API (keep postgres running)
+            # Environment variable will be used (highest priority) and will persist the correct password
             docker compose --env-file .env up -d --build --no-deps api
             
             # Wait and check health

@@ -39,7 +39,30 @@ public class ConnectionStringService : IConnectionStringService
             return _cachedConnectionString;
         }
 
-        // Try to load from persisted file first
+        // ALWAYS prioritize environment variable over persisted file (for Docker/production)
+        // Environment variable is the source of truth and may have been updated
+        var envConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
+            ?? Environment.GetEnvironmentVariable("ConnectionStrings:DefaultConnection");
+
+        if (!string.IsNullOrWhiteSpace(envConnectionString))
+        {
+            _logger.LogInformation("✅ Using connection string from environment variable (highest priority)");
+            _cachedConnectionString = envConnectionString;
+            
+            // Persist it for next time (update persisted file with new value)
+            try
+            {
+                PersistConnectionString(envConnectionString);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "⚠️  Failed to persist connection string from environment variable");
+            }
+            
+            return envConnectionString;
+        }
+
+        // Fallback to persisted file (for local development when env var not set)
         if (File.Exists(_persistenceFilePath))
         {
             try
@@ -54,30 +77,8 @@ public class ConnectionStringService : IConnectionStringService
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "⚠️  Failed to read persisted connection string, falling back to environment variable");
+                _logger.LogWarning(ex, "⚠️  Failed to read persisted connection string, falling back to appsettings.json");
             }
-        }
-
-        // Fallback to environment variable
-        var envConnectionString = Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
-            ?? Environment.GetEnvironmentVariable("ConnectionStrings:DefaultConnection");
-
-        if (!string.IsNullOrWhiteSpace(envConnectionString))
-        {
-            _logger.LogInformation("✅ Using connection string from environment variable");
-            _cachedConnectionString = envConnectionString;
-            
-            // Persist it for next time
-            try
-            {
-                PersistConnectionString(envConnectionString);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "⚠️  Failed to persist connection string from environment variable");
-            }
-            
-            return envConnectionString;
         }
 
         // Fallback to appsettings.json (for local development)
