@@ -28,7 +28,7 @@ public class HealthFacilitiesController : ControllerBase
     }
 
     /// <summary>
-    /// Get all health facilities with pagination and filtering
+    /// Get all health facilities with optional pagination and filtering
     /// </summary>
     /// <param name="facilityName">Search by facility name (partial match, case-insensitive)</param>
     /// <param name="facilityTypeId">Filter by facility type ID</param>
@@ -39,8 +39,8 @@ public class HealthFacilitiesController : ControllerBase
     /// <param name="operationalStatus">Filter by operational status</param>
     /// <param name="sortBy">Sort by field: "name", "createdAt", "updatedAt", "hcprojectenddate", "damalcaafimaadprojectenddate", "betterlifeprojectenddate", "caafimaadplusprojectenddate", or "id" (default: "id")</param>
     /// <param name="sortOrder">Sort order: "asc" or "desc" (default: "asc")</param>
-    /// <param name="pageNumber">Page number (default: 1)</param>
-    /// <param name="pageSize">Number of items per page (default: 50, max: 100)</param>
+    /// <param name="pageNumber">Page number (optional - if not provided, returns all results)</param>
+    /// <param name="pageSize">Number of items per page (optional - if not provided, returns all results, max: 100)</param>
     [HttpGet]
     [AllowAnonymous]
     public async Task<ActionResult<ApiPagedResponse<HealthFacilityDTO>>> GetHealthFacilities(
@@ -53,15 +53,25 @@ public class HealthFacilitiesController : ControllerBase
         [FromQuery] string? operationalStatus = null,
         [FromQuery] string sortBy = "id",
         [FromQuery] string sortOrder = "asc",
-        [FromQuery] int pageNumber = 1,
-        [FromQuery] int pageSize = 50)
+        [FromQuery] int? pageNumber = null,
+        [FromQuery] int? pageSize = null)
     {
         try
         {
-            // Validate pagination parameters
-            if (pageNumber < 1) pageNumber = 1;
-            if (pageSize < 1) pageSize = 50;
-            if (pageSize > 100) pageSize = 100; // Max page size
+            // Determine if pagination is requested
+            bool usePagination = pageNumber.HasValue && pageSize.HasValue;
+            
+            // Validate pagination parameters if provided
+            int validatedPageNumber = 1;
+            int validatedPageSize = 50;
+            
+            if (usePagination)
+            {
+                // Both values are guaranteed to be non-null here due to usePagination check
+                validatedPageNumber = pageNumber!.Value < 1 ? 1 : pageNumber.Value;
+                validatedPageSize = pageSize!.Value < 1 ? 50 : pageSize.Value;
+                if (validatedPageSize > 100) validatedPageSize = 100; // Max page size
+            }
 
             var query = _context.HealthFacilities
                 .Include(hf => hf.District)
@@ -137,19 +147,30 @@ public class HealthFacilitiesController : ControllerBase
             // Get total count before pagination
             var totalCount = await query.CountAsync();
 
-            // Apply pagination
-            var facilities = await query
-                .Skip((pageNumber - 1) * pageSize)
-                .Take(pageSize)
-                .ToListAsync();
+            // Apply pagination only if requested
+            List<HealthFacility> facilities;
+            if (usePagination)
+            {
+                facilities = await query
+                    .Skip((validatedPageNumber - 1) * validatedPageSize)
+                    .Take(validatedPageSize)
+                    .ToListAsync();
+            }
+            else
+            {
+                // Return all results when pagination is not requested
+                facilities = await query.ToListAsync();
+                validatedPageNumber = 1;
+                validatedPageSize = totalCount; // Set pageSize to totalCount to represent "all items on one page"
+            }
 
             var facilityDTOs = facilities.Select(f => f.ToDTO()).ToList();
             
             var pagedResponse = new PagedResponse<HealthFacilityDTO>(
                 facilityDTOs,
                 totalCount,
-                pageNumber,
-                pageSize
+                validatedPageNumber,
+                validatedPageSize
             );
             
             return Ok(ApiPagedResponse<HealthFacilityDTO>.SuccessResult(pagedResponse, "Health facilities retrieved successfully"));
@@ -449,6 +470,45 @@ public class HealthFacilitiesController : ControllerBase
         {
             _logger.LogError(ex, "Error deleting health facility with ID {Id}", id);
             return StatusCode(500, ApiResponse.ErrorResult("An error occurred while deleting the health facility", new List<string> { ex.Message }));
+        }
+    }
+
+    /// <summary>
+    /// Delete all health facilities
+    /// </summary>
+    [HttpDelete("all")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<ApiResponse<object>>> DeleteAllHealthFacilities()
+    {
+        try
+        {
+            // Get count before deletion for response
+            var totalCount = await _context.HealthFacilities.CountAsync();
+
+            if (totalCount == 0)
+            {
+                return Ok(ApiResponse<object>.SuccessResult(
+                    new { deletedCount = 0, message = "No health facilities found to delete" },
+                    "No health facilities were deleted. The database is already empty."
+                ));
+            }
+
+            // Delete all health facilities
+            var allFacilities = await _context.HealthFacilities.ToListAsync();
+            _context.HealthFacilities.RemoveRange(allFacilities);
+            await _context.SaveChangesAsync();
+
+            _logger.LogWarning("⚠️  All {Count} health facilities have been deleted by admin", totalCount);
+
+            return Ok(ApiResponse<object>.SuccessResult(
+                new { deletedCount = totalCount, message = $"Successfully deleted {totalCount} health facility(ies)" },
+                $"All {totalCount} health facility(ies) deleted successfully"
+            ));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting all health facilities");
+            return StatusCode(500, ApiResponse<object>.ErrorResult("An error occurred while deleting all health facilities", new List<string> { ex.Message }));
         }
     }
 
