@@ -6,6 +6,7 @@ public class ConnectionStringService : IConnectionStringService
 {
     private readonly ILogger<ConnectionStringService> _logger;
     private readonly IConfiguration _configuration;
+    private readonly IWebHostEnvironment _environment;
     private readonly string _persistenceFilePath;
     private string? _cachedConnectionString;
 
@@ -16,6 +17,7 @@ public class ConnectionStringService : IConnectionStringService
     {
         _logger = logger;
         _configuration = configuration;
+        _environment = environment;
         // Store in a persistent location (works in Docker volumes)
         _persistenceFilePath = Path.Combine(
             environment.ContentRootPath,
@@ -46,13 +48,18 @@ public class ConnectionStringService : IConnectionStringService
         if (!string.IsNullOrWhiteSpace(envConnectionString))
         {
             _cachedConnectionString = envConnectionString;
-            // Persist for next time
-            PersistConnectionString(envConnectionString);
+            // Only persist in development - in production/Docker, always use environment variables
+            // This prevents password drift when passwords change in .env
+            if (_environment.IsDevelopment())
+            {
+                PersistConnectionString(envConnectionString);
+            }
             return envConnectionString;
         }
 
-        // Priority 2: Persisted file (for persistence across restarts)
-        if (File.Exists(_persistenceFilePath))
+        // Priority 2: Persisted file (only in development - production should use env vars)
+        // In production/Docker, skip persisted file to prevent password drift
+        if (_environment.IsDevelopment() && File.Exists(_persistenceFilePath))
         {
             try
             {

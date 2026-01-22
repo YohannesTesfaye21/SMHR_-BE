@@ -5,6 +5,7 @@ services:
     image: postgres:16-alpine
     container_name: smhfr-postgres
     restart: always
+    entrypoint: ["/docker-entrypoint-postgres.sh"]
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
@@ -15,6 +16,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker-entrypoint-postgres.sh:/docker-entrypoint-postgres.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
       interval: 5s
