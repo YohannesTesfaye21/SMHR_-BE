@@ -59,354 +59,57 @@ jobs:
             DB_PASSWORD=${{ secrets.DB_PASSWORD }}
             EOF
             
-            # Ensure entrypoint script is executable
-            chmod +x docker-entrypoint-postgres.sh
-            
-            # Stop and recreate postgres
-            echo "🔄 Restarting Postgres..."
-            docker compose --env-file .env stop postgres 2>/dev/null || true
-            # Ensure entrypoint script is mounted and executable (for future use)
+            # Start postgres
             chmod +x docker-entrypoint-postgres.sh
             docker compose --env-file .env up -d postgres
             
-            # Wait for Postgres to be ready
-            echo "⏳ Waiting for Postgres to be ready..."
-            POSTGRES_READY=0
+            # Wait for postgres
             for i in {1..30}; do
-              if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                echo "✅ Postgres is ready"
-                POSTGRES_READY=1
-                break
-              fi
+              docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1 && break
               sleep 1
             done
             
-            if [ $POSTGRES_READY -eq 0 ]; then
-              echo "❌ Postgres not ready after 30 seconds"
-              docker compose logs postgres | tail -20
-              exit 1
-            fi
-            
-            # CRITICAL: Always explicitly set the password using peer auth (no password needed)
-            # This ensures the password matches what we expect, regardless of what's in the volume
-            echo "🔐 Setting PostgreSQL password explicitly (using peer authentication)..."
-            PASSWORD_SET=0
-            for i in {1..5}; do
-              # Use peer authentication (Unix socket) - no password required
-              if docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1; then
-                echo "✅ Password set successfully (attempt $i)"
-                PASSWORD_SET=1
-                break
-              fi
-              echo "⏳ Password set attempt $i/5 failed, retrying..."
-              sleep 2
-            done
-            
-            if [ $PASSWORD_SET -eq 0 ]; then
-              echo "❌ Failed to set PostgreSQL password"
-              echo "📋 Checking PostgreSQL logs..."
-              docker compose logs postgres | tail -30
-              echo "📋 Checking if we can connect at all..."
-              docker compose exec -T postgres psql -U postgres -d postgres -c "SELECT version();" 2>&1 || true
-              exit 1
-            fi
-            
-            # Wait a moment for password change to take effect
+            # Set password (persist it)
+            docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1
             sleep 2
             
-            # Verify password works with network connection (what migrations will use)
-            echo "🔍 Verifying password with network connection..."
-            PASSWORD_VERIFIED=0
-            for i in {1..5}; do
-              PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
-              if [ $? -eq 0 ]; then
-                echo "✅ Password verified with network connection (attempt $i)"
-                PASSWORD_VERIFIED=1
-                break
-              fi
-              echo "⏳ Password verification failed (attempt $i/5), retrying..."
-              sleep 2
-            done
-            
-            if [ $PASSWORD_VERIFIED -eq 0 ]; then
-              echo "❌ Password verification failed even after setting it"
-              echo "📋 This indicates a fundamental authentication issue"
-              echo "📋 Checking PostgreSQL pg_hba.conf..."
-              docker compose exec -T postgres cat /var/lib/postgresql/data/pg_hba.conf 2>/dev/null | head -20 || true
-              exit 1
-            fi
-            
-            echo "✅ Password set and verified - ready for migrations"
-            
-            # Stop API before running migrations
+            # Stop API
             docker compose stop api 2>/dev/null || true
             
-            # Build connection string once to avoid exceeding expression length limit
-            DB_CONN_STR="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable"
-            
-            # Run database migrations explicitly in CI/CD pipeline
-            echo "🔄 Running database migrations..."
-            # Remove any persisted connection string file to ensure environment variable is used
-            # Also remove from any Docker volumes that might persist it
-            rm -f data/.connectionstring 2>/dev/null || true
-            docker volume rm smhfr-be_api_data 2>/dev/null || true
-            # Docker Compose creates network as: {project_name}_{network_name}
-            # Project name is set to "smhfr-be" above, network is "smhfr-network"
-            # So full network name is: smhfr-be_smhfr-network
-            # Use SDK image to run migrations (has EF tools available)
-            # Set ASPNETCORE_ENVIRONMENT=Production to prevent ConnectionStringService from using persisted files
-            docker run --rm \
-              --network smhfr-be_smhfr-network \
-              -v $(pwd):/src \
-              -w /src \
-              mcr.microsoft.com/dotnet/sdk:8.0 \
-              sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='$DB_CONN_STR' && dotnet ef database update --project SMHFR_BE.csproj --verbose" || {
-                echo "❌ Migration failed!"
-                echo "📋 Checking current database schema..."
-                docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
-                exit 1
-              }
-            echo "✅ Migrations completed successfully"
-            
-            # Verify critical tables exist (check for OperationalStatuses and Ownerships tables)
-            echo "🔍 Verifying critical tables exist..."
-            # Check in public schema specifically (EF Core uses public schema by default)
-            CHECK_STATUSES=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'OperationalStatuses';" 2>/dev/null | tr -d '[:space:]' || echo "0")
-            CHECK_OWNERSHIPS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'Ownerships';" 2>/dev/null | tr -d '[:space:]' || echo "0")
-            
-            if [ "$CHECK_STATUSES" != "1" ] || [ "$CHECK_OWNERSHIPS" != "1" ]; then
-              echo "⚠️  Critical lookup tables missing! (OperationalStatuses: $CHECK_STATUSES, Ownerships: $CHECK_OWNERSHIPS)"
-              echo "🔄 Tables missing - migration may not have been applied. Diagnosing issue..."
+            # Run migrations
+            DB_CONN="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable"
+            docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update --project SMHFR_BE.csproj" || {
+              echo "Migration failed, checking if tables exist..."
+              CHECK_STATUSES=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='OperationalStatuses';" 2>/dev/null | tr -d '[:space:]' || echo "0")
+              CHECK_OWNERSHIPS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='Ownerships';" 2>/dev/null | tr -d '[:space:]' || echo "0")
               
-              # List all migrations in history for debugging
-              echo "📋 Current migration history:"
-              docker compose exec -T postgres psql -U postgres -d smhfr_db -c "SELECT \"MigrationId\", \"ProductVersion\" FROM \"__EFMigrationsHistory\" ORDER BY \"MigrationId\";" 2>/dev/null || true
-              
-              # Check what EF Core thinks needs to be applied
-              echo "🔍 Checking what EF Core detects as pending migrations..."
-              rm -f data/.connectionstring 2>/dev/null || true
-              # Set ASPNETCORE_ENVIRONMENT=Production to prevent ConnectionStringService from using persisted files
-              # DB_CONN_STR is already defined earlier in the script
-              PENDING_MIGRATIONS=$(docker run --rm \
-                --network smhfr-be_smhfr-network \
-                -v $(pwd):/src \
-                -w /src \
-                mcr.microsoft.com/dotnet/sdk:8.0 \
-                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN_STR' && dotnet ef migrations list --project SMHFR_BE.csproj 2>&1" || echo "ERROR")
-              
-              echo "$PENDING_MIGRATIONS"
-              
-              # Check if the specific migration is in history
-              MIGRATION_EXISTS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null | tr -d '[:space:]' || echo "0")
-              
-              if [ "$MIGRATION_EXISTS" = "1" ]; then
-                echo "⚠️  Migration entry exists in history but tables are missing - this indicates a failed/partial migration"
-                echo "🔄 Removing migration entry and forcing re-application..."
-                # Remove the migration history entry so EF Core will re-apply it
-                docker compose exec -T postgres psql -U postgres -d smhfr_db -c "DELETE FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null || true
-              else
-                echo "ℹ️  Migration entry not in history - checking if we can force apply it..."
-                # Check if HealthFacilities table has the old columns (OperationalStatus, Ownership) or new ones (OperationalStatusId, OwnershipId)
-                HAS_OLD_COLS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'HealthFacilities' AND column_name IN ('OperationalStatus', 'Ownership');" 2>/dev/null | tr -d '[:space:]' || echo "0")
-                HAS_NEW_COLS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'HealthFacilities' AND column_name IN ('OperationalStatusId', 'OwnershipId');" 2>/dev/null | tr -d '[:space:]' || echo "0")
+              if [ "$CHECK_STATUSES" != "1" ] || [ "$CHECK_OWNERSHIPS" != "1" ]; then
+                echo "Tables missing. Checking migration history..."
+                MIGRATION_EXISTS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\"='20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null | tr -d '[:space:]' || echo "0")
                 
-                echo "   HealthFacilities has old columns (OperationalStatus/Ownership): $HAS_OLD_COLS"
-                echo "   HealthFacilities has new columns (OperationalStatusId/OwnershipId): $HAS_NEW_COLS"
+                if [ "$MIGRATION_EXISTS" = "1" ]; then
+                  echo "Migration in history but tables missing. Deleting history and re-running..."
+                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c "DELETE FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\"='20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null || true
+                fi
                 
-                # If we have old columns but not new ones, the migration hasn't been applied at all
-                # If we have new columns, something is very wrong (tables should exist)
-                if [ "$HAS_OLD_COLS" = "2" ] && [ "$HAS_NEW_COLS" = "0" ]; then
-                  echo "✅ Database is in pre-migration state - forcing migration application..."
-                  # Re-verify password before running migration (password might have changed or timing issue)
-                  echo "🔍 Re-verifying password before migration..."
-                  PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
-                  if [ $? -ne 0 ]; then
-                    echo "⚠️  Password verification failed, re-setting password..."
-                    docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1
-                    sleep 2
-                    # Verify again
-                    PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
-                    if [ $? -ne 0 ]; then
-                      echo "❌ Password verification failed even after re-setting"
-                      exit 1
-                    fi
-                  fi
-                  echo "✅ Password verified - proceeding with migration"
-                  # EF Core isn't detecting this migration, so force it by applying to the specific migration
-                  # First check if migration file exists
-                  if [ -f "Migrations/20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables.cs" ]; then
-                    echo "🔄 Migration file exists, forcing application to this specific migration..."
-                    rm -f data/.connectionstring 2>/dev/null || true
-                    docker run --rm \
-                      --network smhfr-be_smhfr-network \
-                      -v $(pwd):/src \
-                      -w /src \
-                      mcr.microsoft.com/dotnet/sdk:8.0 \
-                      sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN_STR' && dotnet ef database update 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj" || {
-                      echo "⚠️  Failed to apply specific migration, will try general update..."
-                    }
-                  else
-                    echo "⚠️  Migration file not found in expected location"
-                  fi
-                elif [ "$HAS_NEW_COLS" = "2" ]; then
-                  echo "⚠️  Database has new columns but lookup tables are missing - this is inconsistent state"
-                  echo "🔄 This suggests a partial migration. Attempting to create tables manually..."
-                  # Try to create the tables manually if they're missing but columns exist
-                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c 'CREATE TABLE IF NOT EXISTS "OperationalStatuses" ("OperationalStatusId" SERIAL PRIMARY KEY, "StatusName" VARCHAR(50) NOT NULL, "CreatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW());' 2>/dev/null || true
-                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c 'CREATE UNIQUE INDEX IF NOT EXISTS "IX_OperationalStatuses_StatusName" ON "OperationalStatuses" ("StatusName");' 2>/dev/null || true
-                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c 'CREATE TABLE IF NOT EXISTS "Ownerships" ("OwnershipId" SERIAL PRIMARY KEY, "OwnershipType" VARCHAR(50) NOT NULL, "CreatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW());' 2>/dev/null || true
-                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c 'CREATE UNIQUE INDEX IF NOT EXISTS "IX_Ownerships_OwnershipType" ON "Ownerships" ("OwnershipType");' 2>/dev/null || true
-                  # Now mark the migration as applied
-                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c "INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES ('20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables', '8.0.0') ON CONFLICT DO NOTHING;" 2>/dev/null || true
-                fi
+                echo "Re-running migrations..."
+                docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update --project SMHFR_BE.csproj" || exit 1
               fi
-              
-              # Re-run migrations - EF Core will detect the missing migration and apply it
-              echo "🔄 Re-running migrations to apply missing migration..."
-              # Re-verify password before running migration (password might have changed or timing issue)
-              echo "🔍 Re-verifying password before migration..."
-              PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
-              if [ $? -ne 0 ]; then
-                echo "⚠️  Password verification failed, re-setting password..."
-                docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1
-                sleep 2
-                # Verify again
-                PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
-                if [ $? -ne 0 ]; then
-                  echo "❌ Password verification failed even after re-setting"
-                  exit 1
-                fi
-              fi
-              echo "✅ Password verified - proceeding with migration"
-              # Remove persisted connection string file to ensure environment variable is used
-              rm -f data/.connectionstring 2>/dev/null || true
-              # Set ASPNETCORE_ENVIRONMENT=Production to prevent ConnectionStringService from using persisted files
-              # Try applying to the specific migration first, then do a general update
-              echo "🔄 Attempting to apply specific migration: 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables"
-              docker run --rm \
-                --network smhfr-be_smhfr-network \
-                -v $(pwd):/src \
-                -w /src \
-                mcr.microsoft.com/dotnet/sdk:8.0 \
-                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN_STR' && dotnet ef database update 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj" || {
-                  echo "⚠️  Specific migration application failed, trying general update..."
-                  docker run --rm \
-                    --network smhfr-be_smhfr-network \
-                    -v $(pwd):/src \
-                    -w /src \
-                    mcr.microsoft.com/dotnet/sdk:8.0 \
-                    sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN_STR' && dotnet ef database update --project SMHFR_BE.csproj" || {
-                      echo "❌ Re-application failed!"
-                      echo "📋 Checking database state..."
-                      docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
-                      echo "📋 Listing all migrations in codebase:"
-                      docker run --rm -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "ls -la /src/Migrations/*.cs 2>/dev/null | grep -i convert || echo 'Migration file not found'" || true
-                      exit 1
-                    }
-                }
-              
-              # Verify again
-              CHECK_STATUSES_AFTER=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'OperationalStatuses';" 2>/dev/null | tr -d '[:space:]' || echo "0")
-              CHECK_OWNERSHIPS_AFTER=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'Ownerships';" 2>/dev/null | tr -d '[:space:]' || echo "0")
-              if [ "$CHECK_STATUSES_AFTER" = "1" ] && [ "$CHECK_OWNERSHIPS_AFTER" = "1" ]; then
-                echo "✅ Both lookup tables now exist"
-              else
-                echo "❌ Tables still missing after re-application! (OperationalStatuses: $CHECK_STATUSES_AFTER, Ownerships: $CHECK_OWNERSHIPS_AFTER)"
-                echo "📋 Final database state check:"
-                docker compose exec -T postgres psql -U postgres -d smhfr_db -c "SELECT \"MigrationId\" FROM \"__EFMigrationsHistory\" ORDER BY \"MigrationId\";" || true
-                exit 1
-              fi
-            else
-              echo "✅ Both OperationalStatuses and Ownerships tables exist"
-            fi
-            
-            # Remove persisted connection string volume
-            docker volume rm smhfr-be_api_data 2>/dev/null || true
+            }
             
             # Start API
-            echo "🚀 Starting API..."
+            docker volume rm smhfr-be_api_data 2>/dev/null || true
             docker compose --env-file .env up -d --no-deps api
             
-            # Wait for API container to be running and accessible (max 60 seconds)
-            echo "⏳ Waiting for API to start and become accessible..."
+            # Wait for API
             for i in {1..30}; do
-              if docker compose ps api | grep -q "Up"; then
-                echo "✅ API container is running"
-                # Give it a moment to initialize
-                sleep 5
-                # Check if it's still running (didn't crash)
-                if docker compose ps api | grep -q "Up"; then
-                  # Try to access the health endpoint
-                  echo "🔍 Testing API accessibility..."
-                  if curl -f -s http://localhost:8080/api/health > /dev/null 2>&1; then
-                    echo "✅ API is accessible via HTTP"
-                    # Verify migrations ran successfully
-                    echo "🔍 Verifying database migrations..."
-                    sleep 3  # Give migrations more time to complete
-                    if docker compose logs api 2>/dev/null | grep -q "Database migrations applied successfully"; then
-                      echo "✅ Database migrations applied successfully"
-                    else
-                      echo "⚠️  Could not confirm migrations in logs, checking for errors..."
-                      # Check for migration-related errors
-                      if docker compose logs api 2>/dev/null | grep -qi "Failed to apply\|Migration failed\|Failed to initialize database"; then
-                        echo "❌ Migration errors detected in logs!"
-                        echo "📋 Full migration-related logs:"
-                        docker compose logs api | grep -i -A 10 -B 5 "migration\|Migration\|initialize\|Initialize" | tail -50
-                        echo "⚠️  API is running but migrations may have failed. Check logs above."
-                        echo "💡 You can manually trigger migrations via: POST /api/health/migrate"
-                      else
-                        echo "⚠️  Migration status unclear - checking if migration already applied..."
-                        # Check if new columns exist (migration already applied)
-                        if docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" 2>/dev/null | grep -q "OperationalStatusId"; then
-                          echo "✅ Migration appears to be applied (OperationalStatusId column exists)"
-                        else
-                          echo "⚠️  Migration may not be applied. Check API logs for details."
-                          docker compose logs api | tail -30
-                        fi
-                      fi
-                    fi
-                    # Try Swagger endpoint
-                    if curl -f -s http://localhost:8080/swagger/index.html > /dev/null 2>&1; then
-                      echo "✅ Swagger UI is accessible"
-                    else
-                      echo "⚠️  Swagger UI not accessible, but API is running"
-                    fi
-                    echo "✅ Deployment successful"
-                    # Check HTTPS configuration
-                    echo "🔍 Checking HTTPS configuration..."
-                    docker compose logs api | grep -E "(HTTPS|Certificate|cert|Listening)" | tail -10 || echo "No HTTPS logs found"
-                    # Show recent logs
-                    echo "📋 Recent API logs:"
-                    docker compose logs api --tail=20
-                    exit 0
-                  else
-                    echo "⚠️  API container is running but not responding (attempt $i/30)"
-                    if [ $i -ge 10 ]; then
-                      echo "📋 API logs:"
-                      docker compose logs api --tail=30
-                    fi
-                  fi
-                else
-                  echo "❌ API container crashed after startup"
-                  docker compose logs api --tail=50
-                  exit 1
-                fi
-              fi
-              echo "⏳ Waiting for API... (attempt $i/30)"
               sleep 2
+              if curl -f -s http://localhost:8080/api/health > /dev/null 2>&1; then
+                echo "✅ Deployment successful"
+                exit 0
+              fi
             done
             
-            # Final check
-            if docker compose ps api | grep -q "Up"; then
-              echo "⚠️  API container is running but not accessible after 60 seconds"
-              echo "📋 Checking logs and container status:"
-              docker compose ps api
-              docker compose logs api --tail=50
-              echo "🔍 Testing connectivity:"
-              curl -v http://localhost:8080/api/health || echo "Connection failed"
-              exit 1
-            else
-              echo "❌ API not running after 60 seconds"
-              docker compose logs api --tail=50
-              exit 1
-            fi
+            echo "❌ API not accessible after 60 seconds"
+            docker compose logs api --tail=50
+            exit 1
