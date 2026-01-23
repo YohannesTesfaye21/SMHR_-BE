@@ -106,6 +106,17 @@ jobs:
             fi
             echo "✅ Password verified"
             
+            # Run database migrations before starting API
+            echo "🔄 Running database migrations..."
+            # Use a temporary container to run migrations
+            docker compose --env-file .env run --rm --no-deps api dotnet ef database update || {
+              echo "❌ Migration failed!"
+              echo "📋 Checking migration status..."
+              docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\dt" || true
+              exit 1
+            }
+            echo "✅ Migrations completed successfully"
+            
             # Stop API
             docker compose stop api 2>/dev/null || true
             
