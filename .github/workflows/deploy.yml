@@ -79,8 +79,24 @@ jobs:
             # Run migrations - apply all pending migrations
             DB_CONN="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable"
             
-            echo "Applying database migrations..."
-            docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update --project SMHFR_BE.csproj"
+            echo "=== Checking migration files on server ==="
+            ls -la Migrations/ || echo "Migrations directory not found"
+            echo ""
+            
+            echo "=== Checking migration history in database ==="
+            docker compose exec -T postgres psql -U postgres -d smhfr_db -c "SELECT \"MigrationId\", \"ProductVersion\" FROM \"__EFMigrationsHistory\" ORDER BY \"MigrationId\";" || echo "Could not query migration history"
+            echo ""
+            
+            echo "=== Building project to ensure migrations are compiled ==="
+            docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "dotnet build SMHFR_BE.csproj --no-restore -c Release" || echo "Build failed, continuing..."
+            echo ""
+            
+            echo "=== Listing available migrations in codebase ==="
+            docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef migrations list --project SMHFR_BE.csproj" || echo "Could not list migrations"
+            echo ""
+            
+            echo "=== Applying database migrations ==="
+            docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && dotnet build SMHFR_BE.csproj --no-restore -c Release > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update --project SMHFR_BE.csproj"
             
             # Start API
             docker volume rm smhfr-be_api_data 2>/dev/null || true
