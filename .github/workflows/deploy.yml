@@ -181,21 +181,10 @@ jobs:
                   echo "⚠️  Database has new columns but lookup tables are missing - this is inconsistent state"
                   echo "🔄 This suggests a partial migration. Attempting to create tables manually..."
                   # Try to create the tables manually if they're missing but columns exist
-                  docker compose exec -T postgres psql -U postgres -d smhfr_db <<'EOSQL'
-CREATE TABLE IF NOT EXISTS "OperationalStatuses" (
-    "OperationalStatusId" SERIAL PRIMARY KEY,
-    "StatusName" VARCHAR(50) NOT NULL,
-    "CreatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-CREATE UNIQUE INDEX IF NOT EXISTS "IX_OperationalStatuses_StatusName" ON "OperationalStatuses" ("StatusName");
-
-CREATE TABLE IF NOT EXISTS "Ownerships" (
-    "OwnershipId" SERIAL PRIMARY KEY,
-    "OwnershipType" VARCHAR(50) NOT NULL,
-    "CreatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-);
-CREATE UNIQUE INDEX IF NOT EXISTS "IX_Ownerships_OwnershipType" ON "Ownerships" ("OwnershipType");
-EOSQL
+                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c 'CREATE TABLE IF NOT EXISTS "OperationalStatuses" ("OperationalStatusId" SERIAL PRIMARY KEY, "StatusName" VARCHAR(50) NOT NULL, "CreatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW());' 2>/dev/null || true
+                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c 'CREATE UNIQUE INDEX IF NOT EXISTS "IX_OperationalStatuses_StatusName" ON "OperationalStatuses" ("StatusName");' 2>/dev/null || true
+                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c 'CREATE TABLE IF NOT EXISTS "Ownerships" ("OwnershipId" SERIAL PRIMARY KEY, "OwnershipType" VARCHAR(50) NOT NULL, "CreatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW());' 2>/dev/null || true
+                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c 'CREATE UNIQUE INDEX IF NOT EXISTS "IX_Ownerships_OwnershipType" ON "Ownerships" ("OwnershipType");' 2>/dev/null || true
                   # Now mark the migration as applied
                   docker compose exec -T postgres psql -U postgres -d smhfr_db -c "INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES ('20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables', '8.0.0') ON CONFLICT DO NOTHING;" 2>/dev/null || true
                 fi
