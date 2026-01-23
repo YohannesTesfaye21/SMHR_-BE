@@ -213,6 +213,21 @@ jobs:
                 # If we have new columns, something is very wrong (tables should exist)
                 if [ "$HAS_OLD_COLS" = "2" ] && [ "$HAS_NEW_COLS" = "0" ]; then
                   echo "✅ Database is in pre-migration state - forcing migration application..."
+                  # Re-verify password before running migration (password might have changed or timing issue)
+                  echo "🔍 Re-verifying password before migration..."
+                  PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
+                  if [ $? -ne 0 ]; then
+                    echo "⚠️  Password verification failed, re-setting password..."
+                    docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1
+                    sleep 2
+                    # Verify again
+                    PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
+                    if [ $? -ne 0 ]; then
+                      echo "❌ Password verification failed even after re-setting"
+                      exit 1
+                    fi
+                  fi
+                  echo "✅ Password verified - proceeding with migration"
                   # EF Core isn't detecting this migration, so force it by applying to the specific migration
                   # First check if migration file exists
                   if [ -f "Migrations/20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables.cs" ]; then
@@ -244,6 +259,21 @@ jobs:
               
               # Re-run migrations - EF Core will detect the missing migration and apply it
               echo "🔄 Re-running migrations to apply missing migration..."
+              # Re-verify password before running migration (password might have changed or timing issue)
+              echo "🔍 Re-verifying password before migration..."
+              PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
+              if [ $? -ne 0 ]; then
+                echo "⚠️  Password verification failed, re-setting password..."
+                docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1
+                sleep 2
+                # Verify again
+                PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
+                if [ $? -ne 0 ]; then
+                  echo "❌ Password verification failed even after re-setting"
+                  exit 1
+                fi
+              fi
+              echo "✅ Password verified - proceeding with migration"
               # Remove persisted connection string file to ensure environment variable is used
               rm -f data/.connectionstring 2>/dev/null || true
               # Set ASPNETCORE_ENVIRONMENT=Production to prevent ConnectionStringService from using persisted files
