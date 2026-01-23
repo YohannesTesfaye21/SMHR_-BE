@@ -62,84 +62,81 @@ jobs:
             # Ensure entrypoint script is executable
             chmod +x docker-entrypoint-postgres.sh
             
-            # Stop and recreate postgres to ensure entrypoint script runs
-            echo "🔄 Restarting Postgres to trigger entrypoint script..."
+            # Stop and recreate postgres
+            echo "🔄 Restarting Postgres..."
             docker compose --env-file .env stop postgres 2>/dev/null || true
-            # Ensure entrypoint script is mounted and executable
+            # Ensure entrypoint script is mounted and executable (for future use)
             chmod +x docker-entrypoint-postgres.sh
             docker compose --env-file .env up -d postgres
             
-            # Wait for Postgres to be ready (entrypoint script will sync password)
-            echo "⏳ Waiting for Postgres and password sync..."
-            ENTRYPOINT_SYNCED=0
-            for i in {1..60}; do
+            # Wait for Postgres to be ready
+            echo "⏳ Waiting for Postgres to be ready..."
+            POSTGRES_READY=0
+            for i in {1..30}; do
               if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
-                echo "✅ Postgres is ready (attempt $i)"
-                # Check if entrypoint script has synced password by checking logs
-                if docker compose logs postgres 2>/dev/null | grep -q "Password synchronized successfully\|Current password already matches"; then
-                  echo "✅ Password sync confirmed from entrypoint script logs"
-                  ENTRYPOINT_SYNCED=1
-                  break
-                elif [ $i -ge 15 ]; then
-                  # After 15 seconds, check if entrypoint script is even running
-                  if ! docker compose logs postgres 2>/dev/null | grep -q "Synchronizing PostgreSQL password"; then
-                    echo "⚠️  Entrypoint script may not be running - checking if script is mounted..."
-                    docker compose exec -T postgres ls -la /docker-entrypoint-postgres.sh 2>/dev/null || echo "⚠️  Entrypoint script not found in container"
-                  fi
-                  # Try to verify password anyway
-                  echo "⏳ Entrypoint script may still be syncing, will verify password..."
-                  break
-                fi
+                echo "✅ Postgres is ready"
+                POSTGRES_READY=1
+                break
               fi
               sleep 1
             done
             
-            # Wait a bit more for entrypoint script to complete
-            if [ $ENTRYPOINT_SYNCED -eq 0 ]; then
-              echo "⏳ Waiting additional time for password sync to complete..."
-              sleep 5
-            else
-              sleep 2
+            if [ $POSTGRES_READY -eq 0 ]; then
+              echo "❌ Postgres not ready after 30 seconds"
+              docker compose logs postgres | tail -20
+              exit 1
             fi
             
-            # Verify password works (entrypoint script should have synced it)
-            echo "🔍 Verifying password after entrypoint sync..."
-            # Try multiple times - entrypoint script might still be syncing
+            # CRITICAL: Always explicitly set the password using peer auth (no password needed)
+            # This ensures the password matches what we expect, regardless of what's in the volume
+            echo "🔐 Setting PostgreSQL password explicitly (using peer authentication)..."
+            PASSWORD_SET=0
+            for i in {1..5}; do
+              # Use peer authentication (Unix socket) - no password required
+              if docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" > /dev/null 2>&1; then
+                echo "✅ Password set successfully (attempt $i)"
+                PASSWORD_SET=1
+                break
+              fi
+              echo "⏳ Password set attempt $i/5 failed, retrying..."
+              sleep 2
+            done
+            
+            if [ $PASSWORD_SET -eq 0 ]; then
+              echo "❌ Failed to set PostgreSQL password"
+              echo "📋 Checking PostgreSQL logs..."
+              docker compose logs postgres | tail -30
+              echo "📋 Checking if we can connect at all..."
+              docker compose exec -T postgres psql -U postgres -d postgres -c "SELECT version();" 2>&1 || true
+              exit 1
+            fi
+            
+            # Wait a moment for password change to take effect
+            sleep 2
+            
+            # Verify password works with network connection (what migrations will use)
+            echo "🔍 Verifying password with network connection..."
             PASSWORD_VERIFIED=0
-            for i in {1..10}; do
+            for i in {1..5}; do
               PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
               if [ $? -eq 0 ]; then
-                echo "✅ Password verified (attempt $i)"
+                echo "✅ Password verified with network connection (attempt $i)"
                 PASSWORD_VERIFIED=1
                 break
               fi
-              echo "⏳ Password verification failed (attempt $i/10), waiting for entrypoint script..."
+              echo "⏳ Password verification failed (attempt $i/5), retrying..."
               sleep 2
             done
             
             if [ $PASSWORD_VERIFIED -eq 0 ]; then
-              echo "⚠️  Password verification failed after waiting, checking entrypoint script logs..."
-              docker compose logs postgres | tail -30
-              echo "🔄 Attempting manual password sync as fallback..."
-              # Try to connect without password first (using peer auth)
-              docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" 2>&1 || {
-                echo "⚠️  Manual password sync via peer auth failed, trying with current password..."
-                # If that fails, the password might be different - check logs for clues
-                docker compose logs postgres | grep -i "password\|auth" | tail -10
-              }
-              sleep 3
-              # Verify again with network connection (what migrations will use)
-              PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
-              if [ $? -ne 0 ]; then
-                echo "❌ Password verification failed even after manual sync"
-                echo "📋 Checking PostgreSQL configuration..."
-                docker compose exec -T postgres cat /var/lib/postgresql/data/pg_hba.conf 2>/dev/null | head -20 || true
-                echo "📋 Current PostgreSQL user info:"
-                docker compose exec -T postgres psql -U postgres -d postgres -c "\du" 2>/dev/null || true
-                exit 1
-              fi
+              echo "❌ Password verification failed even after setting it"
+              echo "📋 This indicates a fundamental authentication issue"
+              echo "📋 Checking PostgreSQL pg_hba.conf..."
+              docker compose exec -T postgres cat /var/lib/postgresql/data/pg_hba.conf 2>/dev/null | head -20 || true
+              exit 1
             fi
-            echo "✅ Password verified and ready for migrations"
+            
+            echo "✅ Password set and verified - ready for migrations"
             
             # Stop API before running migrations
             docker compose stop api 2>/dev/null || true
@@ -215,7 +212,23 @@ jobs:
                 # If we have old columns but not new ones, the migration hasn't been applied at all
                 # If we have new columns, something is very wrong (tables should exist)
                 if [ "$HAS_OLD_COLS" = "2" ] && [ "$HAS_NEW_COLS" = "0" ]; then
-                  echo "✅ Database is in pre-migration state - migration should apply cleanly"
+                  echo "✅ Database is in pre-migration state - forcing migration application..."
+                  # EF Core isn't detecting this migration, so force it by applying to the specific migration
+                  # First check if migration file exists
+                  if [ -f "Migrations/20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables.cs" ]; then
+                    echo "🔄 Migration file exists, forcing application to this specific migration..."
+                    rm -f data/.connectionstring 2>/dev/null || true
+                    docker run --rm \
+                      --network smhfr-be_smhfr-network \
+                      -v $(pwd):/src \
+                      -w /src \
+                      mcr.microsoft.com/dotnet/sdk:8.0 \
+                      sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj" || {
+                      echo "⚠️  Failed to apply specific migration, will try general update..."
+                    }
+                  else
+                    echo "⚠️  Migration file not found in expected location"
+                  fi
                 elif [ "$HAS_NEW_COLS" = "2" ]; then
                   echo "⚠️  Database has new columns but lookup tables are missing - this is inconsistent state"
                   echo "🔄 This suggests a partial migration. Attempting to create tables manually..."
@@ -234,16 +247,28 @@ jobs:
               # Remove persisted connection string file to ensure environment variable is used
               rm -f data/.connectionstring 2>/dev/null || true
               # Set ASPNETCORE_ENVIRONMENT=Production to prevent ConnectionStringService from using persisted files
+              # Try applying to the specific migration first, then do a general update
+              echo "🔄 Attempting to apply specific migration: 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables"
               docker run --rm \
                 --network smhfr-be_smhfr-network \
                 -v $(pwd):/src \
                 -w /src \
                 mcr.microsoft.com/dotnet/sdk:8.0 \
-                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
-                  echo "❌ Re-application failed!"
-                  echo "📋 Checking database state..."
-                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
-                  exit 1
+                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj" || {
+                  echo "⚠️  Specific migration application failed, trying general update..."
+                  docker run --rm \
+                    --network smhfr-be_smhfr-network \
+                    -v $(pwd):/src \
+                    -w /src \
+                    mcr.microsoft.com/dotnet/sdk:8.0 \
+                    sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
+                      echo "❌ Re-application failed!"
+                      echo "📋 Checking database state..."
+                      docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
+                      echo "📋 Listing all migrations in codebase:"
+                      docker run --rm -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "ls -la /src/Migrations/*.cs 2>/dev/null | grep -i convert || echo 'Migration file not found'" || true
+                      exit 1
+                    }
                 }
               
               # Verify again
