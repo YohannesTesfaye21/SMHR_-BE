@@ -10,11 +10,16 @@ namespace SMHFR_BE.Controllers;
 public class HealthController : ControllerBase
 {
     private readonly IHealthCheckService _healthCheckService;
+    private readonly IDatabaseInitializationService _dbInitService;
     private readonly ILogger<HealthController> _logger;
 
-    public HealthController(IHealthCheckService healthCheckService, ILogger<HealthController> logger)
+    public HealthController(
+        IHealthCheckService healthCheckService, 
+        IDatabaseInitializationService dbInitService,
+        ILogger<HealthController> logger)
     {
         _healthCheckService = healthCheckService;
+        _dbInitService = dbInitService;
         _logger = logger;
     }
 
@@ -35,6 +40,33 @@ public class HealthController : ControllerBase
         {
             _logger.LogError(ex, "Error checking health");
             return StatusCode(500, ApiResponse.ErrorResult("An error occurred while checking health", new List<string> { ex.Message }));
+        }
+    }
+
+    /// <summary>
+    /// Run database migrations manually (Admin only)
+    /// </summary>
+    [HttpPost("migrate")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<ApiResponse<object>>> RunMigrations()
+    {
+        try
+        {
+            _logger.LogInformation("🔄 Manual migration triggered by admin");
+            await _dbInitService.InitializeAsync();
+            
+            return Ok(ApiResponse<object>.SuccessResult(
+                new { message = "Database migrations applied successfully" },
+                "Migrations completed successfully"
+            ));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "❌ Failed to run migrations");
+            return StatusCode(500, ApiResponse<object>.ErrorResult(
+                "Failed to apply database migrations",
+                new List<string> { ex.Message, ex.InnerException?.Message ?? "" }.Where(s => !string.IsNullOrEmpty(s)).ToList()
+            ));
         }
     }
 }

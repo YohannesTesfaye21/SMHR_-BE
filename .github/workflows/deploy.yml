@@ -106,19 +106,31 @@ jobs:
             fi
             echo "✅ Password verified"
             
-            # Note: Migrations run automatically on API startup via DatabaseInitializationService
-            # We'll verify they ran successfully by checking API logs after startup
-            echo "ℹ️  Migrations will run automatically when API starts"
-            
-            # Stop API
+            # Stop API before running migrations
             docker compose stop api 2>/dev/null || true
+            
+            # Run database migrations explicitly in CI/CD pipeline
+            echo "🔄 Running database migrations..."
+            # Use SDK image to run migrations (has EF tools available)
+            docker run --rm \
+              --network smhfr-be_smhfr-network \
+              -v $(pwd):/src \
+              -w /src \
+              mcr.microsoft.com/dotnet/sdk:8.0 \
+              sh -c "dotnet tool install --global dotnet-ef && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
+              echo "❌ Migration failed!"
+              echo "📋 Checking current database schema..."
+              docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
+              exit 1
+            }
+            echo "✅ Migrations completed successfully"
             
             # Remove persisted connection string volume
             docker volume rm smhfr-be_api_data 2>/dev/null || true
             
             # Start API
             echo "🚀 Starting API..."
-            docker compose --env-file .env up -d --build --no-deps api
+            docker compose --env-file .env up -d --no-deps api
             
             # Wait for API container to be running and accessible (max 60 seconds)
             echo "⏳ Waiting for API to start and become accessible..."
@@ -135,16 +147,27 @@ jobs:
                     echo "✅ API is accessible via HTTP"
                     # Verify migrations ran successfully
                     echo "🔍 Verifying database migrations..."
+                    sleep 3  # Give migrations more time to complete
                     if docker compose logs api 2>/dev/null | grep -q "Database migrations applied successfully"; then
                       echo "✅ Database migrations applied successfully"
                     else
                       echo "⚠️  Could not confirm migrations in logs, checking for errors..."
-                      if docker compose logs api 2>/dev/null | grep -q "Failed to apply database migrations\|Migration failed"; then
+                      # Check for migration-related errors
+                      if docker compose logs api 2>/dev/null | grep -qi "Failed to apply\|Migration failed\|Failed to initialize database"; then
                         echo "❌ Migration errors detected in logs!"
-                        docker compose logs api | grep -A 10 -B 5 "migration\|Migration" | tail -30
-                        exit 1
+                        echo "📋 Full migration-related logs:"
+                        docker compose logs api | grep -i -A 10 -B 5 "migration\|Migration\|initialize\|Initialize" | tail -50
+                        echo "⚠️  API is running but migrations may have failed. Check logs above."
+                        echo "💡 You can manually trigger migrations via: POST /api/health/migrate"
                       else
-                        echo "⚠️  Migration status unclear, but API is running"
+                        echo "⚠️  Migration status unclear - checking if migration already applied..."
+                        # Check if new columns exist (migration already applied)
+                        if docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" 2>/dev/null | grep -q "OperationalStatusId"; then
+                          echo "✅ Migration appears to be applied (OperationalStatusId column exists)"
+                        else
+                          echo "⚠️  Migration may not be applied. Check API logs for details."
+                          docker compose logs api | tail -30
+                        fi
                       fi
                     fi
                     # Try Swagger endpoint

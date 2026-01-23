@@ -387,6 +387,8 @@ app.Lifetime.ApplicationStarted.Register(() =>
 });
 
 // Initialize database and seed admin user on startup
+// Note: Migrations are run in CI/CD pipeline, not here
+// This only seeds the admin user and verifies connection
 using (var scope = app.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
@@ -398,20 +400,28 @@ using (var scope = app.Services.CreateScope())
         Npgsql.NpgsqlConnection.ClearAllPools();
         logger.LogInformation("✅ Connection pool cleared on startup");
         
-        // Initialize database (connection test + migrations)
+        // Verify database connection (migrations are handled by CI/CD)
         var dbInitService = scope.ServiceProvider.GetRequiredService<IDatabaseInitializationService>();
-        await dbInitService.InitializeAsync();
+        await dbInitService.VerifyConnectionAsync();
         
         // Seed admin user
         var adminSeedService = scope.ServiceProvider.GetRequiredService<IAdminSeedService>();
         await adminSeedService.SeedAsync();
         
-        logger.LogInformation("✅ Database initialization and seeding completed");
+        logger.LogInformation("✅ Database connection verified and admin user seeded");
     }
     catch (Exception ex)
     {
         logger.LogError(ex, "❌ Failed to initialize database");
-        throw;
+        logger.LogError("   Exception: {ExceptionType}", ex.GetType().Name);
+        logger.LogError("   Message: {Message}", ex.Message);
+        if (ex.InnerException != null)
+        {
+            logger.LogError("   Inner Exception: {InnerException}", ex.InnerException.Message);
+        }
+        // Don't throw - allow API to start even if seeding fails
+        // Migrations should have been run by CI/CD pipeline
+        logger.LogWarning("⚠️  API will start but database seeding may have failed");
     }
 }
 
