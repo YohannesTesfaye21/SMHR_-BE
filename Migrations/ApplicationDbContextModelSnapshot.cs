@@ -358,15 +358,11 @@ namespace SMHFR_BE.Migrations
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)");
 
-                    b.Property<string>("OperationalStatus")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
+                    b.Property<int>("OperationalStatusId")
+                        .HasColumnType("integer");
 
-                    b.Property<string>("Ownership")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
+                    b.Property<int>("OwnershipId")
+                        .HasColumnType("integer");
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -380,13 +376,61 @@ namespace SMHFR_BE.Migrations
 
                     b.HasIndex("FacilityTypeId");
 
-                    b.HasIndex("OperationalStatus");
+                    b.HasIndex("OperationalStatusId");
 
-                    b.HasIndex("Ownership");
+                    b.HasIndex("OwnershipId");
 
                     b.HasIndex("Latitude", "Longitude");
 
                     b.ToTable("HealthFacilities");
+                });
+
+            modelBuilder.Entity("SMHFR_BE.Models.OperationalStatus", b =>
+                {
+                    b.Property<int>("OperationalStatusId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("OperationalStatusId"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("StatusName")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.HasKey("OperationalStatusId");
+
+                    b.HasIndex("StatusName")
+                        .IsUnique();
+
+                    b.ToTable("OperationalStatuses");
+                });
+
+            modelBuilder.Entity("SMHFR_BE.Models.Ownership", b =>
+                {
+                    b.Property<int>("OwnershipId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("OwnershipId"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OwnershipType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.HasKey("OwnershipId");
+
+                    b.HasIndex("OwnershipType")
+                        .IsUnique();
+
+                    b.ToTable("Ownerships");
                 });
 
             modelBuilder.Entity("SMHFR_BE.Models.Region", b =>
@@ -429,8 +473,8 @@ namespace SMHFR_BE.Migrations
 
                     b.Property<string>("StateCode")
                         .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("character varying(50)");
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
 
                     b.Property<string>("StateName")
                         .IsRequired()
@@ -521,9 +565,25 @@ namespace SMHFR_BE.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
+                    b.HasOne("SMHFR_BE.Models.OperationalStatus", "OperationalStatus")
+                        .WithMany("HealthFacilities")
+                        .HasForeignKey("OperationalStatusId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("SMHFR_BE.Models.Ownership", "Ownership")
+                        .WithMany("HealthFacilities")
+                        .HasForeignKey("OwnershipId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
                     b.Navigation("District");
 
                     b.Navigation("FacilityType");
+
+                    b.Navigation("OperationalStatus");
+
+                    b.Navigation("Ownership");
                 });
 
             modelBuilder.Entity("SMHFR_BE.Models.Region", b =>
@@ -543,6 +603,16 @@ namespace SMHFR_BE.Migrations
                 });
 
             modelBuilder.Entity("SMHFR_BE.Models.FacilityType", b =>
+                {
+                    b.Navigation("HealthFacilities");
+                });
+
+            modelBuilder.Entity("SMHFR_BE.Models.OperationalStatus", b =>
+                {
+                    b.Navigation("HealthFacilities");
+                });
+
+            modelBuilder.Entity("SMHFR_BE.Models.Ownership", b =>
                 {
                     b.Navigation("HealthFacilities");
                 });

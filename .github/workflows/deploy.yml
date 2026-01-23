@@ -38,6 +38,7 @@ jobs:
             **/.vs
             **/.vscode
             *.md
+            SERVER_FAILURE_ANALYSIS.md
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1
@@ -58,30 +59,50 @@ jobs:
             DB_PASSWORD=${{ secrets.DB_PASSWORD }}
             EOF
             
-            # Start Postgres
+            # Ensure entrypoint script is executable
+            chmod +x docker-entrypoint-postgres.sh
+            
+            # Stop and recreate postgres to ensure entrypoint script runs
+            echo "🔄 Restarting Postgres to trigger entrypoint script..."
+            docker compose --env-file .env stop postgres 2>/dev/null || true
             docker compose --env-file .env up -d postgres
             
-            # Wait for Postgres (max 15 seconds, check every 1 second)
-            echo "⏳ Waiting for Postgres..."
-            for i in {1..15}; do
+            # Wait for Postgres to be ready (entrypoint script will sync password)
+            echo "⏳ Waiting for Postgres and password sync..."
+            for i in {1..30}; do
               if docker compose exec -T postgres pg_isready -U postgres > /dev/null 2>&1; then
                 echo "✅ Postgres is ready"
-                break
+                # Check if entrypoint script has synced password by checking logs
+                if docker compose logs postgres 2>/dev/null | grep -q "Password synchronized successfully\|Current password already matches"; then
+                  echo "✅ Password sync confirmed from entrypoint script"
+                  break
+                elif [ $i -ge 10 ]; then
+                  # After 10 seconds, try to verify password anyway
+                  echo "⏳ Entrypoint script may still be syncing, verifying password..."
+                  break
+                fi
               fi
               sleep 1
             done
             
-            # Set password
-            echo "🔐 Setting password..."
-            docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';"
-            sleep 1
+            # Wait a bit more for entrypoint script to complete
+            sleep 3
             
-            # Verify password
-            echo "🔍 Verifying password..."
+            # Verify password works (entrypoint script should have synced it)
+            echo "🔍 Verifying password after entrypoint sync..."
             PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
             if [ $? -ne 0 ]; then
-              echo "❌ Password verification failed"
-              exit 1
+              echo "⚠️  Password verification failed, checking entrypoint script logs..."
+              docker compose logs postgres | tail -20
+              echo "🔄 Attempting manual password sync as fallback..."
+              docker compose exec -T postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '${{ secrets.DB_PASSWORD }}';" || true
+              sleep 2
+              # Verify again
+              PGPASSWORD='${{ secrets.DB_PASSWORD }}' docker compose exec -T -e PGPASSWORD='${{ secrets.DB_PASSWORD }}' postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1
+              if [ $? -ne 0 ]; then
+                echo "❌ Password verification failed even after manual sync"
+                exit 1
+              fi
             fi
             echo "✅ Password verified"
             

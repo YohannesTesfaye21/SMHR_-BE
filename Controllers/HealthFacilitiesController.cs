@@ -35,8 +35,8 @@ public class HealthFacilitiesController : ControllerBase
     /// <param name="stateId">Filter by state ID</param>
     /// <param name="regionId">Filter by region ID</param>
     /// <param name="districtId">Filter by district ID</param>
-    /// <param name="ownership">Filter by ownership</param>
-    /// <param name="operationalStatus">Filter by operational status</param>
+    /// <param name="ownershipId">Filter by ownership ID</param>
+    /// <param name="operationalStatusId">Filter by operational status ID</param>
     /// <param name="sortBy">Sort by field: "name", "createdAt", "updatedAt", "hcprojectenddate", "damalcaafimaadprojectenddate", "betterlifeprojectenddate", "caafimaadplusprojectenddate", or "id" (default: "id")</param>
     /// <param name="sortOrder">Sort order: "asc" or "desc" (default: "asc")</param>
     /// <param name="pageNumber">Page number (optional - if not provided, returns all results)</param>
@@ -49,8 +49,8 @@ public class HealthFacilitiesController : ControllerBase
         [FromQuery] int? stateId = null,
         [FromQuery] int? regionId = null,
         [FromQuery] int? districtId = null,
-        [FromQuery] string? ownership = null,
-        [FromQuery] string? operationalStatus = null,
+        [FromQuery] int? ownershipId = null,
+        [FromQuery] int? operationalStatusId = null,
         [FromQuery] string sortBy = "id",
         [FromQuery] string sortOrder = "asc",
         [FromQuery] int? pageNumber = null,
@@ -78,6 +78,8 @@ public class HealthFacilitiesController : ControllerBase
                     .ThenInclude(d => d.Region)
                         .ThenInclude(r => r.State)
                 .Include(hf => hf.FacilityType)
+                .Include(hf => hf.Ownership)
+                .Include(hf => hf.OperationalStatus)
                 .AsQueryable();
 
             // Filter by facility name (partial match, case-insensitive)
@@ -104,12 +106,12 @@ public class HealthFacilitiesController : ControllerBase
                 query = query.Where(hf => hf.DistrictId == districtId.Value);
 
             // Filter by ownership
-            if (!string.IsNullOrWhiteSpace(ownership))
-                query = query.Where(hf => hf.Ownership == ownership.Trim());
+            if (ownershipId.HasValue)
+                query = query.Where(hf => hf.OwnershipId == ownershipId.Value);
 
             // Filter by operational status
-            if (!string.IsNullOrWhiteSpace(operationalStatus))
-                query = query.Where(hf => hf.OperationalStatus == operationalStatus.Trim());
+            if (operationalStatusId.HasValue)
+                query = query.Where(hf => hf.OperationalStatusId == operationalStatusId.Value);
 
             // Apply sorting
             sortBy = sortBy?.Trim().ToLower() ?? "id";
@@ -228,6 +230,8 @@ public class HealthFacilitiesController : ControllerBase
                     .ThenInclude(d => d.Region)
                         .ThenInclude(r => r.State)
                 .Include(hf => hf.FacilityType)
+                .Include(hf => hf.Ownership)
+                .Include(hf => hf.OperationalStatus)
                 .FirstOrDefaultAsync(hf => hf.HealthFacilityId == id);
 
             if (healthFacility == null)
@@ -258,6 +262,8 @@ public class HealthFacilitiesController : ControllerBase
                     .ThenInclude(d => d.Region)
                         .ThenInclude(r => r.State)
                 .Include(hf => hf.FacilityType)
+                .Include(hf => hf.Ownership)
+                .Include(hf => hf.OperationalStatus)
                 .FirstOrDefaultAsync(hf => hf.FacilityId == facilityId);
 
             if (healthFacility == null)
@@ -298,8 +304,8 @@ public class HealthFacilitiesController : ControllerBase
                 Longitude = dto.Longitude,
                 DistrictId = dto.DistrictId,
                 FacilityTypeId = dto.FacilityTypeId,
-                Ownership = dto.Ownership,
-                OperationalStatus = dto.OperationalStatus,
+                OwnershipId = dto.OwnershipId,
+                OperationalStatusId = dto.OperationalStatusId,
                 HCPartners = dto.HCPartners,
                 HCProjectEndDate = ToUtcDateTime(dto.HCProjectEndDate),
                 NutritionClusterPartners = dto.NutritionClusterPartners,
@@ -327,6 +333,10 @@ public class HealthFacilitiesController : ControllerBase
                 .Reference(r => r.State).LoadAsync();
             await _context.Entry(healthFacility)
                 .Reference(hf => hf.FacilityType).LoadAsync();
+            await _context.Entry(healthFacility)
+                .Reference(hf => hf.Ownership).LoadAsync();
+            await _context.Entry(healthFacility)
+                .Reference(hf => hf.OperationalStatus).LoadAsync();
 
             var response = ApiResponse<HealthFacilityDTO>.SuccessResult(
                 healthFacility.ToDTO(),
@@ -386,8 +396,8 @@ public class HealthFacilitiesController : ControllerBase
             healthFacility.Longitude = dto.Longitude;
             healthFacility.DistrictId = dto.DistrictId;
             healthFacility.FacilityTypeId = dto.FacilityTypeId;
-            healthFacility.Ownership = dto.Ownership;
-            healthFacility.OperationalStatus = dto.OperationalStatus;
+            healthFacility.OwnershipId = dto.OwnershipId;
+            healthFacility.OperationalStatusId = dto.OperationalStatusId;
             healthFacility.HCPartners = dto.HCPartners;
             healthFacility.HCProjectEndDate = ToUtcDateTime(dto.HCProjectEndDate);
             healthFacility.NutritionClusterPartners = dto.NutritionClusterPartners;
@@ -412,6 +422,10 @@ public class HealthFacilitiesController : ControllerBase
                 .Reference(r => r.State).LoadAsync();
             await _context.Entry(healthFacility)
                 .Reference(hf => hf.FacilityType).LoadAsync();
+            await _context.Entry(healthFacility)
+                .Reference(hf => hf.Ownership).LoadAsync();
+            await _context.Entry(healthFacility)
+                .Reference(hf => hf.OperationalStatus).LoadAsync();
 
             var response = ApiResponse<HealthFacilityDTO>.SuccessResult(
                 healthFacility.ToDTO(),

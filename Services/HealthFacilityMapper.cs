@@ -16,8 +16,8 @@ public static class HealthFacilityMapper
             Longitude = entity.Longitude,
             District = entity.District.ToDTO(),
             FacilityType = entity.FacilityType.ToDTO(),
-            Ownership = entity.Ownership,
-            OperationalStatus = entity.OperationalStatus,
+            Ownership = entity.Ownership.ToDTO(),
+            OperationalStatus = entity.OperationalStatus.ToDTO(),
             HCPartners = entity.HCPartners,
             HCProjectEndDate = entity.HCProjectEndDate,
             NutritionClusterPartners = entity.NutritionClusterPartners,
@@ -73,6 +73,26 @@ public static class HealthFacilityMapper
         {
             FacilityTypeId = entity.FacilityTypeId,
             TypeName = entity.TypeName,
+            CreatedAt = entity.CreatedAt
+        };
+    }
+
+    public static OperationalStatusDTO ToDTO(this OperationalStatus entity)
+    {
+        return new OperationalStatusDTO
+        {
+            OperationalStatusId = entity.OperationalStatusId,
+            StatusName = entity.StatusName,
+            CreatedAt = entity.CreatedAt
+        };
+    }
+
+    public static OwnershipDTO ToDTO(this Ownership entity)
+    {
+        return new OwnershipDTO
+        {
+            OwnershipId = entity.OwnershipId,
+            OwnershipType = entity.OwnershipType,
             CreatedAt = entity.CreatedAt
         };
     }

@@ -17,6 +17,8 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<Region> Regions { get; set; }
     public DbSet<District> Districts { get; set; }
     public DbSet<FacilityType> FacilityTypes { get; set; }
+    public DbSet<OperationalStatus> OperationalStatuses { get; set; }
+    public DbSet<Ownership> Ownerships { get; set; }
     public DbSet<HealthFacility> HealthFacilities { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
@@ -47,14 +49,26 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             entity.HasIndex(e => e.TypeName).IsUnique();
         });
 
+        // Configure OperationalStatus
+        modelBuilder.Entity<OperationalStatus>(entity =>
+        {
+            entity.HasIndex(e => e.StatusName).IsUnique();
+        });
+
+        // Configure Ownership
+        modelBuilder.Entity<Ownership>(entity =>
+        {
+            entity.HasIndex(e => e.OwnershipType).IsUnique();
+        });
+
         // Configure HealthFacility
         modelBuilder.Entity<HealthFacility>(entity =>
         {
             entity.HasIndex(e => e.FacilityId).IsUnique();
             entity.HasIndex(e => e.DistrictId);
             entity.HasIndex(e => e.FacilityTypeId);
-            entity.HasIndex(e => e.Ownership);
-            entity.HasIndex(e => e.OperationalStatus);
+            entity.HasIndex(e => e.OwnershipId);
+            entity.HasIndex(e => e.OperationalStatusId);
             entity.HasIndex(e => new { e.Latitude, e.Longitude });
         });
     }

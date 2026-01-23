@@ -177,23 +177,32 @@ public class ValidationService : IValidationService
             }
         }
 
-        // Validate required string fields
-        if (string.IsNullOrWhiteSpace(dto.Ownership))
+        // Validate OwnershipId
+        if (dto.OwnershipId <= 0)
         {
-            result.AddError(nameof(dto.Ownership), "Ownership is required");
+            result.AddError(nameof(dto.OwnershipId), "Ownership ID is required and must be greater than 0");
         }
-        else if (dto.Ownership.Length > 50)
+        else
         {
-            result.AddError(nameof(dto.Ownership), "Ownership cannot exceed 50 characters");
+            var ownershipExists = await _context.Ownerships.AnyAsync(o => o.OwnershipId == dto.OwnershipId);
+            if (!ownershipExists)
+            {
+                result.AddError(nameof(dto.OwnershipId), $"Ownership with ID {dto.OwnershipId} does not exist.");
+            }
         }
 
-        if (string.IsNullOrWhiteSpace(dto.OperationalStatus))
+        // Validate OperationalStatusId
+        if (dto.OperationalStatusId <= 0)
         {
-            result.AddError(nameof(dto.OperationalStatus), "Operational Status is required");
+            result.AddError(nameof(dto.OperationalStatusId), "Operational Status ID is required and must be greater than 0");
         }
-        else if (dto.OperationalStatus.Length > 50)
+        else
         {
-            result.AddError(nameof(dto.OperationalStatus), "Operational Status cannot exceed 50 characters");
+            var operationalStatusExists = await _context.OperationalStatuses.AnyAsync(os => os.OperationalStatusId == dto.OperationalStatusId);
+            if (!operationalStatusExists)
+            {
+                result.AddError(nameof(dto.OperationalStatusId), $"Operational Status with ID {dto.OperationalStatusId} does not exist.");
+            }
         }
 
         // Validate optional string fields (max length)
@@ -322,23 +331,32 @@ public class ValidationService : IValidationService
             }
         }
 
-        // Validate required string fields
-        if (string.IsNullOrWhiteSpace(dto.Ownership))
+        // Validate OwnershipId
+        if (dto.OwnershipId <= 0)
         {
-            result.AddError(nameof(dto.Ownership), "Ownership is required");
+            result.AddError(nameof(dto.OwnershipId), "Ownership ID is required and must be greater than 0");
         }
-        else if (dto.Ownership.Length > 50)
+        else
         {
-            result.AddError(nameof(dto.Ownership), "Ownership cannot exceed 50 characters");
+            var ownershipExists = await _context.Ownerships.AnyAsync(o => o.OwnershipId == dto.OwnershipId);
+            if (!ownershipExists)
+            {
+                result.AddError(nameof(dto.OwnershipId), $"Ownership with ID {dto.OwnershipId} does not exist.");
+            }
         }
 
-        if (string.IsNullOrWhiteSpace(dto.OperationalStatus))
+        // Validate OperationalStatusId
+        if (dto.OperationalStatusId <= 0)
         {
-            result.AddError(nameof(dto.OperationalStatus), "Operational Status is required");
+            result.AddError(nameof(dto.OperationalStatusId), "Operational Status ID is required and must be greater than 0");
         }
-        else if (dto.OperationalStatus.Length > 50)
+        else
         {
-            result.AddError(nameof(dto.OperationalStatus), "Operational Status cannot exceed 50 characters");
+            var operationalStatusExists = await _context.OperationalStatuses.AnyAsync(os => os.OperationalStatusId == dto.OperationalStatusId);
+            if (!operationalStatusExists)
+            {
+                result.AddError(nameof(dto.OperationalStatusId), $"Operational Status with ID {dto.OperationalStatusId} does not exist.");
+            }
         }
 
         // Validate optional string fields (max length)

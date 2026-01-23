@@ -55,3 +55,33 @@ public class TopRegionDTO
     public string StateName { get; set; } = string.Empty;
     public int FacilityCount { get; set; }
 }
+
+/// <summary>
+/// DTO for facility type breakdown
+/// </summary>
+public class FacilityTypeBreakdownDTO
+{
+    public int FacilityTypeId { get; set; }
+    public string TypeName { get; set; } = string.Empty;
+    public int Count { get; set; }
+}
+
+/// <summary>
+/// DTO for operational status breakdown
+/// </summary>
+public class OperationalStatusBreakdownDTO
+{
+    public int OperationalStatusId { get; set; }
+    public string StatusName { get; set; } = string.Empty;
+    public int Count { get; set; }
+}
+
+/// <summary>
+/// DTO for dashboard statistics
+/// </summary>
+public class DashboardStatisticsDTO
+{
+    public int TotalFacilities { get; set; }
+    public List<FacilityTypeBreakdownDTO> ByFacilityType { get; set; } = new List<FacilityTypeBreakdownDTO>();
+    public List<OperationalStatusBreakdownDTO> ByOperationalStatus { get; set; } = new List<OperationalStatusBreakdownDTO>();
+}

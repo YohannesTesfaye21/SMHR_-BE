@@ -32,13 +32,24 @@ set_password() {
     for i in {1..60}; do
       if pg_isready -U postgres > /dev/null 2>&1; then
         # Postgres is ready, set the password
-        # Use Unix socket connection (no -h flag) - this uses peer/trust auth, no password needed
-        # This works even if the volume has a different password stored
-        if psql -U postgres -c "ALTER USER postgres WITH PASSWORD '$POSTGRES_PASSWORD';" > /dev/null 2>&1; then
+        # Try multiple connection methods to ensure we can connect
+        # Method 1: Unix socket (peer/trust auth - no password needed)
+        # Method 2: Localhost with current password (if we know it)
+        # Method 3: Localhost with trust auth (if configured)
+        PASSWORD_SET=0
+        if psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$POSTGRES_PASSWORD';" > /dev/null 2>&1; then
+          PASSWORD_SET=1
+        elif [ -n "$PGPASSWORD" ] && psql -h localhost -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$POSTGRES_PASSWORD';" > /dev/null 2>&1; then
+          PASSWORD_SET=1
+        fi
+        
+        if [ $PASSWORD_SET -eq 1 ]; then
           echo "✅ Password synchronized successfully"
+          # Wait a moment for password change to take effect
+          sleep 1
           # Verify password works with network connection (what API will use)
           export PGPASSWORD="$POSTGRES_PASSWORD"
-          if psql -h localhost -U postgres -c "SELECT 1;" > /dev/null 2>&1; then
+          if psql -h localhost -U postgres -d postgres -c "SELECT 1;" > /dev/null 2>&1; then
             echo "✅ Password verification successful (network connection works)"
             unset PGPASSWORD
             return 0
@@ -81,7 +92,8 @@ set_password() {
 }
 
 # Set password after postgres starts (non-blocking)
-set_password || echo "⚠️  Password sync had issues but continuing..."
+# Run password sync in background but log results
+(set_password && echo "✅ Password sync completed") || echo "⚠️  Password sync had issues but continuing..."
 
 # Wait for postgres process (this keeps the container running)
 # This is the critical part - we must wait for the main postgres process

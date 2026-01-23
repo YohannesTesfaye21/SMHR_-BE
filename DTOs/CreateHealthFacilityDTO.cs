@@ -23,12 +23,10 @@ public class CreateHealthFacilityDTO
     public int FacilityTypeId { get; set; }
 
     [Required]
-    [MaxLength(50)]
-    public string Ownership { get; set; } = string.Empty;
+    public int OwnershipId { get; set; }
 
     [Required]
-    [MaxLength(50)]
-    public string OperationalStatus { get; set; } = string.Empty;
+    public int OperationalStatusId { get; set; }
 
     // Partner and Project Information
     public string? HCPartners { get; set; }

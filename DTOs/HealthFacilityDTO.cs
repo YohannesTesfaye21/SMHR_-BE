@@ -11,10 +11,8 @@ public class HealthFacilityDTO
     // Lookup DTOs (without circular references)
     public DistrictDTO District { get; set; } = null!;
     public FacilityTypeDTO FacilityType { get; set; } = null!;
-    
-    // String properties (not lookup tables)
-    public string Ownership { get; set; } = string.Empty;
-    public string OperationalStatus { get; set; } = string.Empty;
+    public OwnershipDTO Ownership { get; set; } = null!;
+    public OperationalStatusDTO OperationalStatus { get; set; } = null!;
     
     // Partner and Project Information
     public string? HCPartners { get; set; }

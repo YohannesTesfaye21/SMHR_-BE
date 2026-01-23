@@ -228,35 +228,11 @@ if (connectionString.Contains("Password="))
     }
 }
 
-// Validate database password on startup - fail fast if password is wrong
-// This prevents the app from starting with wrong password and causing restart loops
-try
-{
-    using (var testConnection = new Npgsql.NpgsqlConnection(connectionString))
-    {
-        testConnection.Open();
-        testConnection.Close();
-        Console.WriteLine("✅ Database password verified on startup");
-    }
-}
-catch (Npgsql.NpgsqlException ex) when (ex.SqlState == "28P01")
-{
-    Console.WriteLine("❌ Database password authentication failed on startup!");
-    Console.WriteLine("   SQL State: 28P01 (password authentication failed)");
-    Console.WriteLine("   The password in ConnectionStrings__DefaultConnection does not match PostgreSQL.");
-    Console.WriteLine("   Please verify:");
-    Console.WriteLine("   1. DB_PASSWORD in .env file matches PostgreSQL password");
-    Console.WriteLine("   2. PostgreSQL entrypoint script is syncing password correctly");
-    Console.WriteLine("   3. Connection string environment variable is set correctly");
-    Environment.Exit(1); // Exit instead of starting with wrong password
-}
-catch (Npgsql.NpgsqlException ex)
-{
-    Console.WriteLine($"⚠️  Database connection test failed on startup (SQL State: {ex.SqlState})");
-    Console.WriteLine($"   Error: {ex.Message}");
-    Console.WriteLine("   This might be a transient issue. The app will start but may fail on first DB call.");
-    // Don't exit for other errors - might be transient (DB not ready yet)
-}
+// Database connection verification is handled by:
+// 1. Docker health checks (docker-compose.yml) - ensures postgres is ready before API starts
+// 2. CI/CD pipeline - verifies database connectivity during deployment
+// 3. EF Core retry logic - handles transient connection failures gracefully
+// 4. Application health checks - /api/health endpoint for monitoring
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseNpgsql(connectionString, npgsqlOptions =>

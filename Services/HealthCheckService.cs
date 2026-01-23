@@ -17,18 +17,67 @@ public class HealthCheckService : IHealthCheckService
 
     public object CheckHealth()
     {
-        // Simple health check - just verify API is running
-        // DO NOT check database here to avoid connection pool issues
-        // - Health check runs every 15 seconds (docker-compose)
-        // - Database checks can exhaust connection pool
-        // - If DB connection fails, container will crash (caught by deployment script)
-        // - Actual API requests will verify DB connectivity when needed
-        return new
+        // Lightweight health check that verifies database connectivity
+        // Uses a simple query that doesn't lock tables or exhaust connections
+        try
         {
-            status = "healthy",
-            timestamp = DateTime.UtcNow,
-            service = "SMHFR Backend API",
-            message = "Service is running"
-        };
+            // Use a lightweight query that doesn't require table locks
+            // This will fail fast if authentication is wrong (28P01)
+            var canConnect = _context.Database.CanConnect();
+            
+            if (!canConnect)
+            {
+                return new
+                {
+                    status = "unhealthy",
+                    timestamp = DateTime.UtcNow,
+                    service = "SMHFR Backend API",
+                    message = "Database connection failed",
+                    database = "disconnected"
+                };
+            }
+
+            // Try a simple query to verify authentication works
+            // Using ExecuteSqlRaw with a simple SELECT 1 that doesn't touch any tables
+            _context.Database.ExecuteSqlRaw("SELECT 1");
+            
+            return new
+            {
+                status = "healthy",
+                timestamp = DateTime.UtcNow,
+                service = "SMHFR Backend API",
+                message = "Service is running",
+                database = "connected"
+            };
+        }
+        catch (Npgsql.PostgresException ex) when (ex.SqlState == "28P01")
+        {
+            // Password authentication failed - service is unhealthy
+            _logger.LogError(ex, "❌ Database password authentication failed in health check");
+            return new
+            {
+                status = "unhealthy",
+                timestamp = DateTime.UtcNow,
+                service = "SMHFR Backend API",
+                message = "Database authentication failed",
+                database = "authentication_error",
+                error = "28P01: password authentication failed"
+            };
+        }
+        catch (Exception ex)
+        {
+            // Other database errors - log but don't fail health check
+            // This allows the service to start even if DB is temporarily unavailable
+            _logger.LogWarning(ex, "⚠️  Database health check failed, but service is still running");
+            return new
+            {
+                status = "degraded",
+                timestamp = DateTime.UtcNow,
+                service = "SMHFR Backend API",
+                message = "Service is running but database may be unavailable",
+                database = "error",
+                error = ex.Message
+            };
+        }
     }
 }

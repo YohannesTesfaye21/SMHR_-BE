@@ -42,6 +42,8 @@ public class CSVImportService : ICSVImportService
         var regionsDict = new Dictionary<string, Region>();
         var districtsDict = new Dictionary<string, District>();
         var facilityTypesDict = new Dictionary<string, FacilityType>();
+        var operationalStatusesDict = new Dictionary<string, OperationalStatus>();
+        var ownershipsDict = new Dictionary<string, Ownership>();
 
         // Extract unique values from CSV - FIRST PASS: Build lookup dictionaries
         foreach (var record in csvRecords)
@@ -96,6 +98,26 @@ public class CSVImportService : ICSVImportService
                 facilityTypesDict[record.HealthFacilityType.Trim()] = new FacilityType
                 {
                     TypeName = record.HealthFacilityType.Trim(),
+                    CreatedAt = DateTime.UtcNow
+                };
+            }
+
+            // Operational Statuses
+            if (!string.IsNullOrWhiteSpace(record.OperationalStatus) && !operationalStatusesDict.ContainsKey(record.OperationalStatus.Trim()))
+            {
+                operationalStatusesDict[record.OperationalStatus.Trim()] = new OperationalStatus
+                {
+                    StatusName = record.OperationalStatus.Trim(),
+                    CreatedAt = DateTime.UtcNow
+                };
+            }
+
+            // Ownerships
+            if (!string.IsNullOrWhiteSpace(record.Ownership) && !ownershipsDict.ContainsKey(record.Ownership.Trim()))
+            {
+                ownershipsDict[record.Ownership.Trim()] = new Ownership
+                {
+                    OwnershipType = record.Ownership.Trim(),
                     CreatedAt = DateTime.UtcNow
                 };
             }
@@ -215,7 +237,37 @@ public class CSVImportService : ICSVImportService
         }
         await _context.SaveChangesAsync();
 
-        // Step 6: Create Health Facilities - Insert facilities using registered lookup tables
+        // Step 6: Save OperationalStatuses
+        foreach (var operationalStatus in operationalStatusesDict.Values)
+        {
+            var existing = await _context.OperationalStatuses.FirstOrDefaultAsync(os => os.StatusName == operationalStatus.StatusName);
+            if (existing == null)
+            {
+                _context.OperationalStatuses.Add(operationalStatus);
+            }
+            else
+            {
+                operationalStatusesDict[operationalStatus.StatusName] = existing;
+            }
+        }
+        await _context.SaveChangesAsync();
+
+        // Step 7: Save Ownerships
+        foreach (var ownership in ownershipsDict.Values)
+        {
+            var existing = await _context.Ownerships.FirstOrDefaultAsync(o => o.OwnershipType == ownership.OwnershipType);
+            if (existing == null)
+            {
+                _context.Ownerships.Add(ownership);
+            }
+            else
+            {
+                ownershipsDict[ownership.OwnershipType] = existing;
+            }
+        }
+        await _context.SaveChangesAsync();
+
+        // Step 8: Create Health Facilities - Insert facilities using registered lookup tables
         int facilitiesCount = 0;
         var skippedRecords = new List<string>();
         var processedFacilityIds = new HashSet<string>(); // Track FacilityIds processed in this import session
@@ -328,6 +380,42 @@ public class CSVImportService : ICSVImportService
                 if (!facilityTypesDict.TryGetValue(facilityTypeName, out var facilityType))
                 {
                     var skipReason = $"FacilityType '{facilityTypeName}' was not found in registered FacilityTypes lookup table for FacilityId '{facilityId}'";
+                    _logger.LogWarning("Skipping: {Reason}", skipReason);
+                    skippedRecords.Add($"FacilityId '{facilityId}': {skipReason}");
+                    continue;
+                }
+
+                // Get OperationalStatus
+                var operationalStatusName = record.OperationalStatus?.Trim();
+                if (string.IsNullOrWhiteSpace(operationalStatusName))
+                {
+                    var skipReason = $"OperationalStatus is empty for FacilityId '{facilityId}'";
+                    _logger.LogWarning("Skipping: {Reason}", skipReason);
+                    skippedRecords.Add($"FacilityId '{facilityId}': {skipReason}");
+                    continue;
+                }
+
+                if (!operationalStatusesDict.TryGetValue(operationalStatusName, out var operationalStatus))
+                {
+                    var skipReason = $"OperationalStatus '{operationalStatusName}' was not found in registered OperationalStatuses lookup table for FacilityId '{facilityId}'";
+                    _logger.LogWarning("Skipping: {Reason}", skipReason);
+                    skippedRecords.Add($"FacilityId '{facilityId}': {skipReason}");
+                    continue;
+                }
+
+                // Get Ownership
+                var ownershipType = record.Ownership?.Trim();
+                if (string.IsNullOrWhiteSpace(ownershipType))
+                {
+                    var skipReason = $"Ownership is empty for FacilityId '{facilityId}'";
+                    _logger.LogWarning("Skipping: {Reason}", skipReason);
+                    skippedRecords.Add($"FacilityId '{facilityId}': {skipReason}");
+                    continue;
+                }
+
+                if (!ownershipsDict.TryGetValue(ownershipType, out var ownership))
+                {
+                    var skipReason = $"Ownership '{ownershipType}' was not found in registered Ownerships lookup table for FacilityId '{facilityId}'";
                     _logger.LogWarning("Skipping: {Reason}", skipReason);
                     skippedRecords.Add($"FacilityId '{facilityId}': {skipReason}");
                     continue;
@@ -462,8 +550,8 @@ public class CSVImportService : ICSVImportService
                 Longitude = longitude,
                 DistrictId = district.DistrictId,
                 FacilityTypeId = facilityType.FacilityTypeId,
-                Ownership = record.Ownership?.Trim() ?? "Unknown",
-                OperationalStatus = record.OperationalStatus?.Trim() ?? "Unknown",
+                OwnershipId = ownership.OwnershipId,
+                OperationalStatusId = operationalStatus.OperationalStatusId,
                 HCPartners = HandleNoValue(record.HCPartners),
                 HCProjectEndDate = ParseDate(record.HCProjectEndDate),
                 NutritionClusterPartners = HandleNoValue(record.NutritionClusterPartners),

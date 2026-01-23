@@ -98,6 +98,37 @@ docker-compose logs -f api
 docker-compose logs -f postgres
 ```
 
+## Troubleshooting
+
+### Database Password Authentication Error (28P01)
+
+If you encounter `28P01: password authentication failed for user "postgres"` errors, the database password may be out of sync. Fix it with:
+
+```bash
+cd /opt/smhfr-be
+
+# 1. Get the password from .env
+DB_PASS=$(grep DB_PASSWORD .env | cut -d '=' -f2)
+
+# 2. Set the password in PostgreSQL
+docker compose exec postgres psql -U postgres -d postgres -c "ALTER USER postgres WITH PASSWORD '$DB_PASS';"
+
+# 3. Verify the password works
+PGPASSWORD="$DB_PASS" docker compose exec -T postgres psql -h localhost -U postgres -d postgres -c "SELECT 1;" 
+
+# 4. Remove the persisted connection string volume (has old password)
+docker volume rm smhfr-be_api_data 2>/dev/null || true
+
+# 5. Restart the API to use the correct password
+docker compose restart api
+
+# 6. Wait and check logs
+sleep 5
+docker compose logs api --tail=20 | grep -E "(password|Password|28P01|authentication)"
+```
+
+This synchronizes the PostgreSQL password with the password in your `.env` file and clears any cached connection strings.
+
 ## License
 
 [Your License Here]

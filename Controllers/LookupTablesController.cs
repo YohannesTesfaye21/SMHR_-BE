@@ -200,6 +200,86 @@ public class LookupTablesController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// Get all operational statuses with pagination
+    /// </summary>
+    /// <param name="pageNumber">Page number (default: 1)</param>
+    /// <param name="pageSize">Number of items per page (default: 50, max: 100)</param>
+    [HttpGet("operational-statuses")]
+    [AllowAnonymous]
+    public async Task<ActionResult<ApiPagedResponse<OperationalStatus>>> GetOperationalStatuses(
+        [FromQuery] int pageNumber = 1,
+        [FromQuery] int pageSize = 50)
+    {
+        try
+        {
+            // Validate pagination parameters
+            if (pageNumber < 1) pageNumber = 1;
+            if (pageSize < 1) pageSize = 50;
+            if (pageSize > 100) pageSize = 100;
+
+            var query = _context.OperationalStatuses.AsQueryable();
+
+            // Get total count before pagination
+            var totalCount = await query.CountAsync();
+
+            // Apply pagination
+            var operationalStatuses = await query
+                .OrderBy(os => os.StatusName)
+                .Skip((pageNumber - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+
+            var pagedResponse = new PagedResponse<OperationalStatus>(operationalStatuses, totalCount, pageNumber, pageSize);
+            return Ok(ApiPagedResponse<OperationalStatus>.SuccessResult(pagedResponse, "Operational statuses retrieved successfully"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving operational statuses");
+            return StatusCode(500, ApiPagedResponse<OperationalStatus>.ErrorResult("An error occurred while retrieving operational statuses", new List<string> { ex.Message }));
+        }
+    }
+
+    /// <summary>
+    /// Get all ownerships with pagination
+    /// </summary>
+    /// <param name="pageNumber">Page number (default: 1)</param>
+    /// <param name="pageSize">Number of items per page (default: 50, max: 100)</param>
+    [HttpGet("ownerships")]
+    [AllowAnonymous]
+    public async Task<ActionResult<ApiPagedResponse<Ownership>>> GetOwnerships(
+        [FromQuery] int pageNumber = 1,
+        [FromQuery] int pageSize = 50)
+    {
+        try
+        {
+            // Validate pagination parameters
+            if (pageNumber < 1) pageNumber = 1;
+            if (pageSize < 1) pageSize = 50;
+            if (pageSize > 100) pageSize = 100;
+
+            var query = _context.Ownerships.AsQueryable();
+
+            // Get total count before pagination
+            var totalCount = await query.CountAsync();
+
+            // Apply pagination
+            var ownerships = await query
+                .OrderBy(o => o.OwnershipType)
+                .Skip((pageNumber - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync();
+
+            var pagedResponse = new PagedResponse<Ownership>(ownerships, totalCount, pageNumber, pageSize);
+            return Ok(ApiPagedResponse<Ownership>.SuccessResult(pagedResponse, "Ownerships retrieved successfully"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving ownerships");
+            return StatusCode(500, ApiPagedResponse<Ownership>.ErrorResult("An error occurred while retrieving ownerships", new List<string> { ex.Message }));
+        }
+    }
+
     // ==================== STATE CRUD ====================
 
     /// <summary>
@@ -627,6 +707,206 @@ public class LookupTablesController : ControllerBase
         {
             _logger.LogError(ex, "Error deleting facility type with ID {Id}", id);
             return StatusCode(500, ApiResponse.ErrorResult("An error occurred while deleting the facility type", new List<string> { ex.Message }));
+        }
+    }
+
+    // ==================== OPERATIONAL STATUS CRUD ====================
+
+    /// <summary>
+    /// Create a new operational status
+    /// </summary>
+    [HttpPost("operational-statuses")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<ApiResponse<OperationalStatus>>> CreateOperationalStatus(OperationalStatus operationalStatus)
+    {
+        try
+        {
+            if (await _context.OperationalStatuses.AnyAsync(os => os.StatusName == operationalStatus.StatusName))
+            {
+                return BadRequest(ApiResponse<OperationalStatus>.ErrorResult($"Operational status with name '{operationalStatus.StatusName}' already exists"));
+            }
+
+            operationalStatus.CreatedAt = DateTime.UtcNow;
+            _context.OperationalStatuses.Add(operationalStatus);
+            await _context.SaveChangesAsync();
+
+            return CreatedAtAction(nameof(GetOperationalStatuses), new { }, ApiResponse<OperationalStatus>.SuccessResult(operationalStatus, "Operational status created successfully"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating operational status");
+            return StatusCode(500, ApiResponse<OperationalStatus>.ErrorResult("An error occurred while creating the operational status", new List<string> { ex.Message }));
+        }
+    }
+
+    /// <summary>
+    /// Update an operational status
+    /// </summary>
+    [HttpPut("operational-statuses/{id}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<ApiResponse>> UpdateOperationalStatus(int id, OperationalStatus operationalStatus)
+    {
+        try
+        {
+            if (id != operationalStatus.OperationalStatusId)
+            {
+                return BadRequest(ApiResponse.ErrorResult("ID in URL does not match ID in request body"));
+            }
+
+            var existingOperationalStatus = await _context.OperationalStatuses.FindAsync(id);
+            if (existingOperationalStatus == null)
+            {
+                return NotFound(ApiResponse.ErrorResult($"Operational status with ID {id} not found"));
+            }
+
+            // Check if StatusName is being changed and if new name already exists
+            if (existingOperationalStatus.StatusName != operationalStatus.StatusName && await _context.OperationalStatuses.AnyAsync(os => os.StatusName == operationalStatus.StatusName))
+            {
+                return BadRequest(ApiResponse.ErrorResult($"Operational status with name '{operationalStatus.StatusName}' already exists"));
+            }
+
+            existingOperationalStatus.StatusName = operationalStatus.StatusName;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(ApiResponse.SuccessResult("Operational status updated successfully"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating operational status with ID {Id}", id);
+            return StatusCode(500, ApiResponse.ErrorResult("An error occurred while updating the operational status", new List<string> { ex.Message }));
+        }
+    }
+
+    /// <summary>
+    /// Delete an operational status
+    /// </summary>
+    [HttpDelete("operational-statuses/{id}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<ApiResponse>> DeleteOperationalStatus(int id)
+    {
+        try
+        {
+            var operationalStatus = await _context.OperationalStatuses.Include(os => os.HealthFacilities).FirstOrDefaultAsync(os => os.OperationalStatusId == id);
+            if (operationalStatus == null)
+            {
+                return NotFound(ApiResponse.ErrorResult($"Operational status with ID {id} not found"));
+            }
+
+            if (operationalStatus.HealthFacilities.Any())
+            {
+                return BadRequest(ApiResponse.ErrorResult("Cannot delete operational status because it has associated health facilities. Please delete or reassign all health facilities first."));
+            }
+
+            _context.OperationalStatuses.Remove(operationalStatus);
+            await _context.SaveChangesAsync();
+
+            return Ok(ApiResponse.SuccessResult("Operational status deleted successfully"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting operational status with ID {Id}", id);
+            return StatusCode(500, ApiResponse.ErrorResult("An error occurred while deleting the operational status", new List<string> { ex.Message }));
+        }
+    }
+
+    // ==================== OWNERSHIP CRUD ====================
+
+    /// <summary>
+    /// Create a new ownership
+    /// </summary>
+    [HttpPost("ownerships")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<ApiResponse<Ownership>>> CreateOwnership(Ownership ownership)
+    {
+        try
+        {
+            if (await _context.Ownerships.AnyAsync(o => o.OwnershipType == ownership.OwnershipType))
+            {
+                return BadRequest(ApiResponse<Ownership>.ErrorResult($"Ownership with type '{ownership.OwnershipType}' already exists"));
+            }
+
+            ownership.CreatedAt = DateTime.UtcNow;
+            _context.Ownerships.Add(ownership);
+            await _context.SaveChangesAsync();
+
+            return CreatedAtAction(nameof(GetOwnerships), new { }, ApiResponse<Ownership>.SuccessResult(ownership, "Ownership created successfully"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error creating ownership");
+            return StatusCode(500, ApiResponse<Ownership>.ErrorResult("An error occurred while creating the ownership", new List<string> { ex.Message }));
+        }
+    }
+
+    /// <summary>
+    /// Update an ownership
+    /// </summary>
+    [HttpPut("ownerships/{id}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<ApiResponse>> UpdateOwnership(int id, Ownership ownership)
+    {
+        try
+        {
+            if (id != ownership.OwnershipId)
+            {
+                return BadRequest(ApiResponse.ErrorResult("ID in URL does not match ID in request body"));
+            }
+
+            var existingOwnership = await _context.Ownerships.FindAsync(id);
+            if (existingOwnership == null)
+            {
+                return NotFound(ApiResponse.ErrorResult($"Ownership with ID {id} not found"));
+            }
+
+            // Check if OwnershipType is being changed and if new type already exists
+            if (existingOwnership.OwnershipType != ownership.OwnershipType && await _context.Ownerships.AnyAsync(o => o.OwnershipType == ownership.OwnershipType))
+            {
+                return BadRequest(ApiResponse.ErrorResult($"Ownership with type '{ownership.OwnershipType}' already exists"));
+            }
+
+            existingOwnership.OwnershipType = ownership.OwnershipType;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(ApiResponse.SuccessResult("Ownership updated successfully"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error updating ownership with ID {Id}", id);
+            return StatusCode(500, ApiResponse.ErrorResult("An error occurred while updating the ownership", new List<string> { ex.Message }));
+        }
+    }
+
+    /// <summary>
+    /// Delete an ownership
+    /// </summary>
+    [HttpDelete("ownerships/{id}")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<ApiResponse>> DeleteOwnership(int id)
+    {
+        try
+        {
+            var ownership = await _context.Ownerships.Include(o => o.HealthFacilities).FirstOrDefaultAsync(o => o.OwnershipId == id);
+            if (ownership == null)
+            {
+                return NotFound(ApiResponse.ErrorResult($"Ownership with ID {id} not found"));
+            }
+
+            if (ownership.HealthFacilities.Any())
+            {
+                return BadRequest(ApiResponse.ErrorResult("Cannot delete ownership because it has associated health facilities. Please delete or reassign all health facilities first."));
+            }
+
+            _context.Ownerships.Remove(ownership);
+            await _context.SaveChangesAsync();
+
+            return Ok(ApiResponse.SuccessResult("Ownership deleted successfully"));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error deleting ownership with ID {Id}", id);
+            return StatusCode(500, ApiResponse.ErrorResult("An error occurred while deleting the ownership", new List<string> { ex.Message }));
         }
     }
 }

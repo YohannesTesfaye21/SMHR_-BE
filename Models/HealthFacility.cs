@@ -32,12 +32,10 @@ public class HealthFacility
     public int FacilityTypeId { get; set; }
 
     [Required]
-    [MaxLength(50)]
-    public string Ownership { get; set; } = string.Empty;
+    public int OwnershipId { get; set; }
 
     [Required]
-    [MaxLength(50)]
-    public string OperationalStatus { get; set; } = string.Empty;
+    public int OperationalStatusId { get; set; }
 
     // Partner and Project Information
     [Column(TypeName = "text")]
@@ -80,4 +78,10 @@ public class HealthFacility
 
     [ForeignKey("FacilityTypeId")]
     public virtual FacilityType FacilityType { get; set; } = null!;
+
+    [ForeignKey("OwnershipId")]
+    public virtual Ownership Ownership { get; set; } = null!;
+
+    [ForeignKey("OperationalStatusId")]
+    public virtual OperationalStatus OperationalStatus { get; set; } = null!;
 }

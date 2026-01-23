@@ -464,4 +464,120 @@ public class DashboardController : ControllerBase
             return StatusCode(500, ApiResponse<List<TopRegionDTO>>.ErrorResult("An error occurred while retrieving top regions", new List<string> { ex.Message }));
         }
     }
+
+    /// <summary>
+    /// Get dashboard statistics: total facilities, breakdown by facility type, and breakdown by operational status
+    /// </summary>
+    /// <param name="stateId">Optional filter by state ID</param>
+    /// <param name="regionId">Optional filter by region ID</param>
+    /// <param name="districtId">Optional filter by district ID</param>
+    [HttpGet("statistics")]
+    [AllowAnonymous]
+    public async Task<ActionResult<ApiResponse<DashboardStatisticsDTO>>> GetDashboardStatistics(
+        [FromQuery] int? stateId = null,
+        [FromQuery] int? regionId = null,
+        [FromQuery] int? districtId = null)
+    {
+        try
+        {
+            var query = _context.HealthFacilities
+                .Include(hf => hf.FacilityType)
+                .Include(hf => hf.OperationalStatus)
+                .Include(hf => hf.District)
+                    .ThenInclude(d => d.Region)
+                        .ThenInclude(r => r.State)
+                .AsQueryable();
+
+            // Apply filters
+            if (stateId.HasValue)
+            {
+                query = query.Where(hf => hf.District.Region.StateId == stateId.Value);
+            }
+
+            if (regionId.HasValue)
+            {
+                query = query.Where(hf => hf.District.RegionId == regionId.Value);
+            }
+
+            if (districtId.HasValue)
+            {
+                query = query.Where(hf => hf.DistrictId == districtId.Value);
+            }
+
+            // Get total facilities count
+            var totalFacilities = await query.CountAsync();
+
+            // Get breakdown by facility type
+            var byFacilityType = await query
+                .GroupBy(hf => new { hf.FacilityType.FacilityTypeId, hf.FacilityType.TypeName })
+                .Select(g => new FacilityTypeBreakdownDTO
+                {
+                    FacilityTypeId = g.Key.FacilityTypeId,
+                    TypeName = g.Key.TypeName,
+                    Count = g.Count()
+                })
+                .OrderByDescending(x => x.Count)
+                .ThenBy(x => x.TypeName)
+                .ToListAsync();
+
+            // Get breakdown by operational status
+            var byOperationalStatus = await query
+                .GroupBy(hf => new { hf.OperationalStatus.OperationalStatusId, hf.OperationalStatus.StatusName })
+                .Select(g => new OperationalStatusBreakdownDTO
+                {
+                    OperationalStatusId = g.Key.OperationalStatusId,
+                    StatusName = g.Key.StatusName,
+                    Count = g.Count()
+                })
+                .OrderByDescending(x => x.Count)
+                .ThenBy(x => x.StatusName)
+                .ToListAsync();
+
+            var statistics = new DashboardStatisticsDTO
+            {
+                TotalFacilities = totalFacilities,
+                ByFacilityType = byFacilityType,
+                ByOperationalStatus = byOperationalStatus
+            };
+
+            return Ok(ApiResponse<DashboardStatisticsDTO>.SuccessResult(statistics, "Dashboard statistics retrieved successfully"));
+        }
+        catch (Npgsql.PostgresException pgEx) when (pgEx.SqlState == "28P01")
+        {
+            _logger.LogError(pgEx, "❌ Database password authentication failed in GetDashboardStatistics");
+            _logger.LogError("Connection string used: {ConnectionString}", _context.Database.GetConnectionString());
+            
+            // Clear connection pool to force new connections
+            try
+            {
+                Npgsql.NpgsqlConnection.ClearAllPools();
+                _logger.LogInformation("Cleared Npgsql connection pool after authentication failure");
+            }
+            catch (Exception clearEx)
+            {
+                _logger.LogError(clearEx, "Failed to clear connection pool");
+            }
+            
+            return StatusCode(500, ApiResponse<DashboardStatisticsDTO>.ErrorResult(
+                "Database authentication failed. Please check database credentials.",
+                new List<string> 
+                { 
+                    "28P01: password authentication failed for user \"postgres\"",
+                    $"Connection string: {_context.Database.GetConnectionString()?.Replace("Password=postgres", "Password=***")}"
+                }));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error retrieving dashboard statistics: {ExceptionType} - {Message}", ex.GetType().Name, ex.Message);
+            
+            // Include inner exception details if present
+            var errorMessages = new List<string> { ex.Message };
+            if (ex.InnerException != null)
+            {
+                errorMessages.Add($"Inner exception: {ex.InnerException.Message}");
+            }
+            
+            return StatusCode(500, ApiResponse<DashboardStatisticsDTO>.ErrorResult("An error occurred while retrieving dashboard statistics", errorMessages));
+        }
+    }
 }
