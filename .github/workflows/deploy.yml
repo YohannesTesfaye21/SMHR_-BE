@@ -111,13 +111,16 @@ jobs:
             
             # Run database migrations explicitly in CI/CD pipeline
             echo "🔄 Running database migrations..."
+            # Docker Compose creates network as: {project_name}_{network_name}
+            # Project name is set to "smhfr-be" above, network is "smhfr-network"
+            # So full network name is: smhfr-be_smhfr-network
             # Use SDK image to run migrations (has EF tools available)
             docker run --rm \
               --network smhfr-be_smhfr-network \
               -v $(pwd):/src \
               -w /src \
               mcr.microsoft.com/dotnet/sdk:8.0 \
-              sh -c "dotnet tool install --global dotnet-ef && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
+              sh -c "export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
               echo "❌ Migration failed!"
               echo "📋 Checking current database schema..."
               docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
