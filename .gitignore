@@ -48,8 +48,7 @@ artifacts/
 **/packages/*
 
 # Entity Framework
-Migrations/*.Designer.cs
-!Migrations/*.Designer.cs.bak
+# Note: Designer.cs files should be committed for migrations to work in CI/CD
 
 # Connection string persistence
 data/
