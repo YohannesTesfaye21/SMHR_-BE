@@ -141,6 +141,9 @@ jobs:
             # Stop API before running migrations
             docker compose stop api 2>/dev/null || true
             
+            # Build connection string once to avoid exceeding expression length limit
+            DB_CONN_STR="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable"
+            
             # Run database migrations explicitly in CI/CD pipeline
             echo "🔄 Running database migrations..."
             # Remove any persisted connection string file to ensure environment variable is used
@@ -157,7 +160,7 @@ jobs:
               -v $(pwd):/src \
               -w /src \
               mcr.microsoft.com/dotnet/sdk:8.0 \
-              sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj --verbose" || {
+              sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='$DB_CONN_STR' && dotnet ef database update --project SMHFR_BE.csproj --verbose" || {
                 echo "❌ Migration failed!"
                 echo "📋 Checking current database schema..."
                 docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
@@ -183,12 +186,13 @@ jobs:
               echo "🔍 Checking what EF Core detects as pending migrations..."
               rm -f data/.connectionstring 2>/dev/null || true
               # Set ASPNETCORE_ENVIRONMENT=Production to prevent ConnectionStringService from using persisted files
+              # DB_CONN_STR is already defined earlier in the script
               PENDING_MIGRATIONS=$(docker run --rm \
                 --network smhfr-be_smhfr-network \
                 -v $(pwd):/src \
                 -w /src \
                 mcr.microsoft.com/dotnet/sdk:8.0 \
-                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef migrations list --project SMHFR_BE.csproj 2>&1" || echo "ERROR")
+                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN_STR' && dotnet ef migrations list --project SMHFR_BE.csproj 2>&1" || echo "ERROR")
               
               echo "$PENDING_MIGRATIONS"
               
@@ -238,7 +242,7 @@ jobs:
                       -v $(pwd):/src \
                       -w /src \
                       mcr.microsoft.com/dotnet/sdk:8.0 \
-                      sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj" || {
+                      sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN_STR' && dotnet ef database update 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj" || {
                       echo "⚠️  Failed to apply specific migration, will try general update..."
                     }
                   else
@@ -284,14 +288,14 @@ jobs:
                 -v $(pwd):/src \
                 -w /src \
                 mcr.microsoft.com/dotnet/sdk:8.0 \
-                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj" || {
+                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN_STR' && dotnet ef database update 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj" || {
                   echo "⚠️  Specific migration application failed, trying general update..."
                   docker run --rm \
                     --network smhfr-be_smhfr-network \
                     -v $(pwd):/src \
                     -w /src \
                     mcr.microsoft.com/dotnet/sdk:8.0 \
-                    sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
+                    sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN_STR' && dotnet ef database update --project SMHFR_BE.csproj" || {
                       echo "❌ Re-application failed!"
                       echo "📋 Checking database state..."
                       docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
