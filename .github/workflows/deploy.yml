@@ -135,20 +135,71 @@ jobs:
             
             if [ "$CHECK_STATUSES" != "1" ] || [ "$CHECK_OWNERSHIPS" != "1" ]; then
               echo "⚠️  Critical lookup tables missing! (OperationalStatuses: $CHECK_STATUSES, Ownerships: $CHECK_OWNERSHIPS)"
-              echo "🔄 Migration history may be out of sync. Attempting to fix..."
-              # Remove the migration history entry for the problematic migration
-              docker compose exec -T postgres psql -U postgres -d smhfr_db -c "DELETE FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null || true
-              # Re-run the migration
-              echo "🔄 Re-applying migration..."
-              docker run --rm \
-                --network smhfr-be_smhfr-network \
-                -v $(pwd):/src \
-                -w /src \
-                mcr.microsoft.com/dotnet/sdk:8.0 \
-                sh -c "export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
-                echo "❌ Re-application failed!"
-                exit 1
-              }
+              echo "🔄 Migration history may be out of sync. Checking migration history..."
+              # Check what migrations are actually in the history
+              LAST_MIGRATION=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT \"MigrationId\" FROM \"__EFMigrationsHistory\" ORDER BY \"MigrationId\" DESC LIMIT 1;" 2>/dev/null | tr -d '[:space:]' || echo "")
+              echo "📋 Last migration in history: ${LAST_MIGRATION:-'none'}"
+              
+              # Check if the specific migration is in history
+              MIGRATION_EXISTS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null | tr -d '[:space:]' || echo "0")
+              
+              if [ "$MIGRATION_EXISTS" = "0" ]; then
+                echo "🔍 Migration entry not found in history. Generating migration SQL and applying directly..."
+                # Generate SQL script for the specific migration and save to shared volume
+                # Use the last migration as the "from" point, or generate from beginning if none exists
+                if [ -n "$LAST_MIGRATION" ] && [ "$LAST_MIGRATION" != "none" ]; then
+                  echo "📋 Generating SQL from: $LAST_MIGRATION to: 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables"
+                  docker run --rm \
+                    --network smhfr-be_smhfr-network \
+                    -v $(pwd):/src \
+                    -w /src \
+                    mcr.microsoft.com/dotnet/sdk:8.0 \
+                    sh -c "export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef migrations script $LAST_MIGRATION 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj --output /src/migration_fix.sql --idempotent" || {
+                      echo "❌ Failed to generate migration script!"
+                      exit 1
+                    }
+                else
+                  echo "📋 Generating SQL from beginning to: 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables"
+                  docker run --rm \
+                    --network smhfr-be_smhfr-network \
+                    -v $(pwd):/src \
+                    -w /src \
+                    mcr.microsoft.com/dotnet/sdk:8.0 \
+                    sh -c "export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef migrations script 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj --output /src/migration_fix.sql --idempotent" || {
+                      echo "❌ Failed to generate migration script!"
+                      exit 1
+                    }
+                fi
+                # Apply the SQL script
+                echo "🔄 Applying migration SQL..."
+                docker compose exec -T postgres psql -U postgres -d smhfr_db < migration_fix.sql || {
+                  echo "❌ Failed to apply migration SQL!"
+                  echo "📋 Migration SQL content (first 50 lines):"
+                  head -50 migration_fix.sql || true
+                  rm -f migration_fix.sql || true
+                  exit 1
+                }
+                # Clean up
+                rm -f migration_fix.sql || true
+                # Manually insert migration history entry
+                echo "📝 Recording migration in history..."
+                docker compose exec -T postgres psql -U postgres -d smhfr_db -c "INSERT INTO \"__EFMigrationsHistory\" (\"MigrationId\", \"ProductVersion\") VALUES ('20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables', '8.0.0') ON CONFLICT DO NOTHING;" 2>/dev/null || true
+              else
+                echo "🔄 Migration entry exists but tables are missing. Removing entry and re-applying..."
+                # Remove the migration history entry for the problematic migration
+                docker compose exec -T postgres psql -U postgres -d smhfr_db -c "DELETE FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null || true
+                # Re-run the migration
+                echo "🔄 Re-applying migration..."
+                docker run --rm \
+                  --network smhfr-be_smhfr-network \
+                  -v $(pwd):/src \
+                  -w /src \
+                  mcr.microsoft.com/dotnet/sdk:8.0 \
+                  sh -c "export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
+                  echo "❌ Re-application failed!"
+                  exit 1
+                }
+              fi
               # Verify again
               CHECK_STATUSES_AFTER=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'OperationalStatuses'" 2>/dev/null | tr -d '[:space:]' || echo "0")
               CHECK_OWNERSHIPS_AFTER=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'Ownerships'" 2>/dev/null | tr -d '[:space:]' || echo "0")
