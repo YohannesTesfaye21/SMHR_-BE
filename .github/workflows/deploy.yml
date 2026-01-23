@@ -84,6 +84,11 @@ jobs:
             # Stop API
             docker compose stop api 2>/dev/null || true
             
+            # Verify migration files are present
+            echo "=== Checking migration files on server ==="
+            ls -la Migrations/ | head -20 || echo "Migrations directory not found"
+            echo ""
+            
             # Apply database migrations
             # Pass connection string via environment variable to avoid shell escaping issues
             docker run --rm --network smhfr-be_smhfr-network \
@@ -96,7 +101,10 @@ jobs:
                 dotnet nuget locals all --clear > /dev/null 2>&1 || true
                 dotnet restore SMHFR_BE.csproj
                 dotnet build SMHFR_BE.csproj -c Release --no-restore
-                dotnet ef database update --project SMHFR_BE.csproj --no-build
+                echo '=== Listing migrations EF Core sees ==='
+                dotnet ef migrations list --project SMHFR_BE.csproj || true
+                echo '=== Applying migrations ==='
+                dotnet ef database update --project SMHFR_BE.csproj
               "
             
             # Start API
