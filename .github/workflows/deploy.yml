@@ -111,6 +111,8 @@ jobs:
             
             # Run database migrations explicitly in CI/CD pipeline
             echo "🔄 Running database migrations..."
+            # Remove any persisted connection string file to ensure environment variable is used
+            rm -f data/.connectionstring 2>/dev/null || true
             # Docker Compose creates network as: {project_name}_{network_name}
             # Project name is set to "smhfr-be" above, network is "smhfr-network"
             # So full network name is: smhfr-be_smhfr-network
@@ -120,12 +122,12 @@ jobs:
               -v $(pwd):/src \
               -w /src \
               mcr.microsoft.com/dotnet/sdk:8.0 \
-              sh -c "export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
-              echo "❌ Migration failed!"
-              echo "📋 Checking current database schema..."
-              docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
-              exit 1
-            }
+              sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
+                echo "❌ Migration failed!"
+                echo "📋 Checking current database schema..."
+                docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
+                exit 1
+              }
             echo "✅ Migrations completed successfully"
             
             # Verify critical tables exist (check for OperationalStatuses and Ownerships tables)
@@ -150,12 +152,14 @@ jobs:
               
               # Re-run migrations - EF Core will detect the missing migration and apply it
               echo "🔄 Re-running migrations to apply missing migration..."
+              # Remove persisted connection string file to ensure environment variable is used
+              rm -f data/.connectionstring 2>/dev/null || true
               docker run --rm \
                 --network smhfr-be_smhfr-network \
                 -v $(pwd):/src \
                 -w /src \
                 mcr.microsoft.com/dotnet/sdk:8.0 \
-                sh -c "export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
+                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
                   echo "❌ Re-application failed!"
                   exit 1
                 }
