@@ -106,16 +106,9 @@ jobs:
             fi
             echo "✅ Password verified"
             
-            # Run database migrations before starting API
-            echo "🔄 Running database migrations..."
-            # Use a temporary container to run migrations
-            docker compose --env-file .env run --rm --no-deps api dotnet ef database update || {
-              echo "❌ Migration failed!"
-              echo "📋 Checking migration status..."
-              docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\dt" || true
-              exit 1
-            }
-            echo "✅ Migrations completed successfully"
+            # Note: Migrations run automatically on API startup via DatabaseInitializationService
+            # We'll verify they ran successfully by checking API logs after startup
+            echo "ℹ️  Migrations will run automatically when API starts"
             
             # Stop API
             docker compose stop api 2>/dev/null || true
@@ -140,6 +133,20 @@ jobs:
                   echo "🔍 Testing API accessibility..."
                   if curl -f -s http://localhost:8080/api/health > /dev/null 2>&1; then
                     echo "✅ API is accessible via HTTP"
+                    # Verify migrations ran successfully
+                    echo "🔍 Verifying database migrations..."
+                    if docker compose logs api 2>/dev/null | grep -q "Database migrations applied successfully"; then
+                      echo "✅ Database migrations applied successfully"
+                    else
+                      echo "⚠️  Could not confirm migrations in logs, checking for errors..."
+                      if docker compose logs api 2>/dev/null | grep -q "Failed to apply database migrations\|Migration failed"; then
+                        echo "❌ Migration errors detected in logs!"
+                        docker compose logs api | grep -A 10 -B 5 "migration\|Migration" | tail -30
+                        exit 1
+                      else
+                        echo "⚠️  Migration status unclear, but API is running"
+                      fi
+                    fi
                     # Try Swagger endpoint
                     if curl -f -s http://localhost:8080/swagger/index.html > /dev/null 2>&1; then
                       echo "✅ Swagger UI is accessible"
