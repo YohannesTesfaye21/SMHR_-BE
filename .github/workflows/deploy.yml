@@ -76,19 +76,11 @@ jobs:
             # Stop API
             docker compose stop api 2>/dev/null || true
             
-            # Check if specific migration is in history BEFORE running migrations
-            MIGRATION_EXISTS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\"='20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null | tr -d '[:space:]' || echo "0")
-            
-            # Run migrations
+            # Run migrations - apply all pending migrations
             DB_CONN="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable"
             
-            if [ "$MIGRATION_EXISTS" = "0" ]; then
-              echo "Migration not in history, applying specific migration..."
-              docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update 20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables --project SMHFR_BE.csproj"
-            else
-              echo "Migration in history, running general update..."
-              docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update --project SMHFR_BE.csproj"
-            fi
+            echo "Applying database migrations..."
+            docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update --project SMHFR_BE.csproj"
             
             # Start API
             docker volume rm smhfr-be_api_data 2>/dev/null || true
