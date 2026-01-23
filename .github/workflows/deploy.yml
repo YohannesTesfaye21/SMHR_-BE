@@ -112,17 +112,20 @@ jobs:
             # Run database migrations explicitly in CI/CD pipeline
             echo "🔄 Running database migrations..."
             # Remove any persisted connection string file to ensure environment variable is used
+            # Also remove from any Docker volumes that might persist it
             rm -f data/.connectionstring 2>/dev/null || true
+            docker volume rm smhfr-be_api_data 2>/dev/null || true
             # Docker Compose creates network as: {project_name}_{network_name}
             # Project name is set to "smhfr-be" above, network is "smhfr-network"
             # So full network name is: smhfr-be_smhfr-network
             # Use SDK image to run migrations (has EF tools available)
+            # Set ASPNETCORE_ENVIRONMENT=Production to prevent ConnectionStringService from using persisted files
             docker run --rm \
               --network smhfr-be_smhfr-network \
               -v $(pwd):/src \
               -w /src \
               mcr.microsoft.com/dotnet/sdk:8.0 \
-              sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj --verbose" || {
+              sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj --verbose" || {
                 echo "❌ Migration failed!"
                 echo "📋 Checking current database schema..."
                 docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
@@ -147,12 +150,13 @@ jobs:
               # Check what EF Core thinks needs to be applied
               echo "🔍 Checking what EF Core detects as pending migrations..."
               rm -f data/.connectionstring 2>/dev/null || true
+              # Set ASPNETCORE_ENVIRONMENT=Production to prevent ConnectionStringService from using persisted files
               PENDING_MIGRATIONS=$(docker run --rm \
                 --network smhfr-be_smhfr-network \
                 -v $(pwd):/src \
                 -w /src \
                 mcr.microsoft.com/dotnet/sdk:8.0 \
-                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef migrations list --project SMHFR_BE.csproj 2>&1" || echo "ERROR")
+                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef migrations list --project SMHFR_BE.csproj 2>&1" || echo "ERROR")
               
               echo "$PENDING_MIGRATIONS"
               
@@ -194,12 +198,13 @@ jobs:
               echo "🔄 Re-running migrations to apply missing migration..."
               # Remove persisted connection string file to ensure environment variable is used
               rm -f data/.connectionstring 2>/dev/null || true
+              # Set ASPNETCORE_ENVIRONMENT=Production to prevent ConnectionStringService from using persisted files
               docker run --rm \
                 --network smhfr-be_smhfr-network \
                 -v $(pwd):/src \
                 -w /src \
                 mcr.microsoft.com/dotnet/sdk:8.0 \
-                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
+                sh -c "rm -f /src/data/.connectionstring 2>/dev/null || true && export PATH=\"\$PATH:/root/.dotnet/tools\" && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
                   echo "❌ Re-application failed!"
                   echo "📋 Checking database state..."
                   docker compose exec -T postgres psql -U postgres -d smhfr_db -c "\d \"HealthFacilities\"" || true
