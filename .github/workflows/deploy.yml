@@ -78,24 +78,24 @@ jobs:
             
             # Run migrations
             DB_CONN="Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable"
-            docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update --project SMHFR_BE.csproj" || {
-              echo "Migration failed, checking if tables exist..."
-              CHECK_STATUSES=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='OperationalStatuses';" 2>/dev/null | tr -d '[:space:]' || echo "0")
-              CHECK_OWNERSHIPS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='Ownerships';" 2>/dev/null | tr -d '[:space:]' || echo "0")
+            docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update --project SMHFR_BE.csproj"
+            
+            # Verify critical tables exist
+            CHECK_STATUSES=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='OperationalStatuses';" 2>/dev/null | tr -d '[:space:]' || echo "0")
+            CHECK_OWNERSHIPS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='Ownerships';" 2>/dev/null | tr -d '[:space:]' || echo "0")
+            
+            if [ "$CHECK_STATUSES" != "1" ] || [ "$CHECK_OWNERSHIPS" != "1" ]; then
+              echo "Tables missing. Checking migration history..."
+              MIGRATION_EXISTS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\"='20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null | tr -d '[:space:]' || echo "0")
               
-              if [ "$CHECK_STATUSES" != "1" ] || [ "$CHECK_OWNERSHIPS" != "1" ]; then
-                echo "Tables missing. Checking migration history..."
-                MIGRATION_EXISTS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\"='20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null | tr -d '[:space:]' || echo "0")
-                
-                if [ "$MIGRATION_EXISTS" = "1" ]; then
-                  echo "Migration in history but tables missing. Deleting history and re-running..."
-                  docker compose exec -T postgres psql -U postgres -d smhfr_db -c "DELETE FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\"='20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null || true
-                fi
-                
-                echo "Re-running migrations..."
-                docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update --project SMHFR_BE.csproj" || exit 1
+              if [ "$MIGRATION_EXISTS" = "1" ]; then
+                echo "Migration in history but tables missing. Deleting history and re-running..."
+                docker compose exec -T postgres psql -U postgres -d smhfr_db -c "DELETE FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\"='20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null || true
               fi
-            }
+              
+              echo "Re-running migrations..."
+              docker run --rm --network smhfr-be_smhfr-network -v $(pwd):/src -w /src mcr.microsoft.com/dotnet/sdk:8.0 sh -c "export PATH=\$PATH:/root/.dotnet/tools && export ASPNETCORE_ENVIRONMENT=Production && dotnet tool install --global dotnet-ef > /dev/null 2>&1 && dotnet restore SMHFR_BE.csproj > /dev/null 2>&1 && export ConnectionStrings__DefaultConnection='$DB_CONN' && dotnet ef database update --project SMHFR_BE.csproj" || exit 1
+            fi
             
             # Start API
             docker volume rm smhfr-be_api_data 2>/dev/null || true
