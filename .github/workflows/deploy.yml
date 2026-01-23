@@ -128,6 +128,40 @@ jobs:
             }
             echo "✅ Migrations completed successfully"
             
+            # Verify critical tables exist (check for OperationalStatuses and Ownerships tables)
+            echo "🔍 Verifying critical tables exist..."
+            CHECK_STATUSES=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'OperationalStatuses'" 2>/dev/null | tr -d '[:space:]' || echo "0")
+            CHECK_OWNERSHIPS=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'Ownerships'" 2>/dev/null | tr -d '[:space:]' || echo "0")
+            
+            if [ "$CHECK_STATUSES" != "1" ] || [ "$CHECK_OWNERSHIPS" != "1" ]; then
+              echo "⚠️  Critical lookup tables missing! (OperationalStatuses: $CHECK_STATUSES, Ownerships: $CHECK_OWNERSHIPS)"
+              echo "🔄 Migration history may be out of sync. Attempting to fix..."
+              # Remove the migration history entry for the problematic migration
+              docker compose exec -T postgres psql -U postgres -d smhfr_db -c "DELETE FROM \"__EFMigrationsHistory\" WHERE \"MigrationId\" = '20260123184530_ConvertOwnershipAndOperationalStatusToLookupTables';" 2>/dev/null || true
+              # Re-run the migration
+              echo "🔄 Re-applying migration..."
+              docker run --rm \
+                --network smhfr-be_smhfr-network \
+                -v $(pwd):/src \
+                -w /src \
+                mcr.microsoft.com/dotnet/sdk:8.0 \
+                sh -c "export PATH=\"\$PATH:/root/.dotnet/tools\" && dotnet tool install --global dotnet-ef && dotnet restore SMHFR_BE.csproj && export ConnectionStrings__DefaultConnection='Host=postgres;Port=5432;Database=smhfr_db;Username=postgres;Password=${{ secrets.DB_PASSWORD }};Pooling=true;Minimum Pool Size=0;Maximum Pool Size=100;Command Timeout=30;Keepalive=30;Tcp Keepalive=true;SSL Mode=Disable' && dotnet ef database update --project SMHFR_BE.csproj" || {
+                echo "❌ Re-application failed!"
+                exit 1
+              }
+              # Verify again
+              CHECK_STATUSES_AFTER=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'OperationalStatuses'" 2>/dev/null | tr -d '[:space:]' || echo "0")
+              CHECK_OWNERSHIPS_AFTER=$(docker compose exec -T postgres psql -U postgres -d smhfr_db -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'Ownerships'" 2>/dev/null | tr -d '[:space:]' || echo "0")
+              if [ "$CHECK_STATUSES_AFTER" = "1" ] && [ "$CHECK_OWNERSHIPS_AFTER" = "1" ]; then
+                echo "✅ Both lookup tables now exist"
+              else
+                echo "❌ Tables still missing after re-application! (OperationalStatuses: $CHECK_STATUSES_AFTER, Ownerships: $CHECK_OWNERSHIPS_AFTER)"
+                exit 1
+              fi
+            else
+              echo "✅ Both OperationalStatuses and Ownerships tables exist"
+            fi
+            
             # Remove persisted connection string volume
             docker volume rm smhfr-be_api_data 2>/dev/null || true
             
