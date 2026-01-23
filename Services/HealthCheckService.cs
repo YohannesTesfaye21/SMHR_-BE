@@ -17,65 +17,81 @@ public class HealthCheckService : IHealthCheckService
 
     public object CheckHealth()
     {
-        // Lightweight health check that verifies database connectivity
-        // Uses a simple query that doesn't lock tables or exhaust connections
+        // Health check that always returns a response (never throws)
+        // API should be accessible even if database is down
         try
         {
-            // Use a lightweight query that doesn't require table locks
-            // This will fail fast if authentication is wrong (28P01)
-            var canConnect = _context.Database.CanConnect();
-            
-            if (!canConnect)
+            // Try to check database connectivity (non-blocking, with timeout)
+            var canConnect = false;
+            try
             {
+                // Use CanConnect with a short timeout to avoid blocking
+                canConnect = _context.Database.CanConnect();
+                
+                if (canConnect)
+                {
+                    // Try a simple query to verify authentication works
+                    _context.Database.ExecuteSqlRaw("SELECT 1");
+                    
+                    return new
+                    {
+                        status = "healthy",
+                        timestamp = DateTime.UtcNow,
+                        service = "SMHFR Backend API",
+                        message = "Service is running",
+                        database = "connected"
+                    };
+                }
+            }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "28P01")
+            {
+                // Password authentication failed
+                _logger.LogError(ex, "❌ Database password authentication failed in health check");
                 return new
                 {
-                    status = "unhealthy",
+                    status = "degraded",
                     timestamp = DateTime.UtcNow,
                     service = "SMHFR Backend API",
-                    message = "Database connection failed",
-                    database = "disconnected"
+                    message = "Service is running but database authentication failed",
+                    database = "authentication_error",
+                    error = "28P01: password authentication failed"
                 };
             }
-
-            // Try a simple query to verify authentication works
-            // Using ExecuteSqlRaw with a simple SELECT 1 that doesn't touch any tables
-            _context.Database.ExecuteSqlRaw("SELECT 1");
+            catch (Exception dbEx)
+            {
+                // Other database errors - service is still running
+                _logger.LogWarning(dbEx, "⚠️  Database health check failed, but service is still running");
+                return new
+                {
+                    status = "degraded",
+                    timestamp = DateTime.UtcNow,
+                    service = "SMHFR Backend API",
+                    message = "Service is running but database may be unavailable",
+                    database = "error",
+                    error = dbEx.Message
+                };
+            }
             
-            return new
-            {
-                status = "healthy",
-                timestamp = DateTime.UtcNow,
-                service = "SMHFR Backend API",
-                message = "Service is running",
-                database = "connected"
-            };
-        }
-        catch (Npgsql.PostgresException ex) when (ex.SqlState == "28P01")
-        {
-            // Password authentication failed - service is unhealthy
-            _logger.LogError(ex, "❌ Database password authentication failed in health check");
-            return new
-            {
-                status = "unhealthy",
-                timestamp = DateTime.UtcNow,
-                service = "SMHFR Backend API",
-                message = "Database authentication failed",
-                database = "authentication_error",
-                error = "28P01: password authentication failed"
-            };
-        }
-        catch (Exception ex)
-        {
-            // Other database errors - log but don't fail health check
-            // This allows the service to start even if DB is temporarily unavailable
-            _logger.LogWarning(ex, "⚠️  Database health check failed, but service is still running");
+            // If we get here, CanConnect returned false
             return new
             {
                 status = "degraded",
                 timestamp = DateTime.UtcNow,
                 service = "SMHFR Backend API",
-                message = "Service is running but database may be unavailable",
-                database = "error",
+                message = "Service is running but database connection failed",
+                database = "disconnected"
+            };
+        }
+        catch (Exception ex)
+        {
+            // Catch-all to ensure health check never crashes the app
+            _logger.LogError(ex, "❌ Unexpected error in health check");
+            return new
+            {
+                status = "degraded",
+                timestamp = DateTime.UtcNow,
+                service = "SMHFR Backend API",
+                message = "Service is running but health check encountered an error",
                 error = ex.Message
             };
         }

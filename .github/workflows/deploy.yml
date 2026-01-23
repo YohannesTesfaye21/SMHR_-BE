@@ -116,36 +116,61 @@ jobs:
             echo "🚀 Starting API..."
             docker compose --env-file .env up -d --build --no-deps api
             
-            # Wait for API container to be running (max 20 seconds)
-            echo "⏳ Waiting for API to start..."
-            for i in {1..10}; do
+            # Wait for API container to be running and accessible (max 60 seconds)
+            echo "⏳ Waiting for API to start and become accessible..."
+            for i in {1..30}; do
               if docker compose ps api | grep -q "Up"; then
                 echo "✅ API container is running"
                 # Give it a moment to initialize
-                sleep 3
+                sleep 5
                 # Check if it's still running (didn't crash)
                 if docker compose ps api | grep -q "Up"; then
-                  echo "✅ Deployment successful"
-                  # Check HTTPS configuration
-                  echo "🔍 Checking HTTPS configuration..."
-                  docker compose logs api | grep -E "(HTTPS|Certificate|cert)" | tail -10 || echo "No HTTPS logs found"
-                  exit 0
+                  # Try to access the health endpoint
+                  echo "🔍 Testing API accessibility..."
+                  if curl -f -s http://localhost:8080/api/health > /dev/null 2>&1; then
+                    echo "✅ API is accessible via HTTP"
+                    # Try Swagger endpoint
+                    if curl -f -s http://localhost:8080/swagger/index.html > /dev/null 2>&1; then
+                      echo "✅ Swagger UI is accessible"
+                    else
+                      echo "⚠️  Swagger UI not accessible, but API is running"
+                    fi
+                    echo "✅ Deployment successful"
+                    # Check HTTPS configuration
+                    echo "🔍 Checking HTTPS configuration..."
+                    docker compose logs api | grep -E "(HTTPS|Certificate|cert|Listening)" | tail -10 || echo "No HTTPS logs found"
+                    # Show recent logs
+                    echo "📋 Recent API logs:"
+                    docker compose logs api --tail=20
+                    exit 0
+                  else
+                    echo "⚠️  API container is running but not responding (attempt $i/30)"
+                    if [ $i -ge 10 ]; then
+                      echo "📋 API logs:"
+                      docker compose logs api --tail=30
+                    fi
+                  fi
                 else
                   echo "❌ API container crashed after startup"
-                  docker compose logs api --tail=30
+                  docker compose logs api --tail=50
                   exit 1
                 fi
               fi
-              echo "⏳ Waiting for API... (attempt $i/10)"
+              echo "⏳ Waiting for API... (attempt $i/30)"
               sleep 2
             done
             
             # Final check
             if docker compose ps api | grep -q "Up"; then
-              echo "✅ Deployment successful"
-              exit 0
+              echo "⚠️  API container is running but not accessible after 60 seconds"
+              echo "📋 Checking logs and container status:"
+              docker compose ps api
+              docker compose logs api --tail=50
+              echo "🔍 Testing connectivity:"
+              curl -v http://localhost:8080/api/health || echo "Connection failed"
+              exit 1
             else
-              echo "❌ API not running after 20 seconds"
+              echo "❌ API not running after 60 seconds"
               docker compose logs api --tail=50
               exit 1
             fi
