@@ -18,7 +18,7 @@ public class CSVImportService : ICSVImportService
         _logger = logger;
     }
 
-    public async Task<(int states, int regions, int districts, int facilityTypes, int facilities)> ImportFromCSVAsync(string csvFilePath)
+    public async Task<(int states, int regions, int districts, int facilityTypes, int facilities, int updated, List<string> skippedRecords)> ImportFromCSVAsync(string csvFilePath, bool updateExisting = false)
     {
         var config = new CsvConfiguration(CultureInfo.InvariantCulture)
         {
@@ -269,6 +269,7 @@ public class CSVImportService : ICSVImportService
 
         // Step 8: Create Health Facilities - Insert facilities using registered lookup tables
         int facilitiesCount = 0;
+        int updatedCount = 0;
         var skippedRecords = new List<string>();
         var processedFacilityIds = new HashSet<string>(); // Track FacilityIds processed in this import session
         int totalCSVRecords = csvRecords.Count; // Track total records in CSV
@@ -303,7 +304,9 @@ public class CSVImportService : ICSVImportService
                 var existingFacility = await _context.HealthFacilities
                     .FirstOrDefaultAsync(hf => hf.FacilityId == facilityId);
                 
-                if (existingFacility != null)
+                bool isUpdate = existingFacility != null;
+                
+                if (isUpdate && !updateExisting)
                 {
                     var skipReason = $"FacilityId '{facilityId}' already exists in database";
                     _logger.LogInformation("Skipping: {Reason}", skipReason);
@@ -385,40 +388,83 @@ public class CSVImportService : ICSVImportService
                     continue;
                 }
 
-                // Get OperationalStatus
+                // Get OperationalStatus - handle Yes/No values and empty values
                 var operationalStatusName = record.OperationalStatus?.Trim();
                 if (string.IsNullOrWhiteSpace(operationalStatusName))
                 {
-                    var skipReason = $"OperationalStatus is empty for FacilityId '{facilityId}'";
-                    _logger.LogWarning("Skipping: {Reason}", skipReason);
-                    skippedRecords.Add($"FacilityId '{facilityId}': {skipReason}");
-                    continue;
+                    // Operational status is empty - use default "Unknown" or "Operational" based on context
+                    operationalStatusName = "Unknown";
+                    _logger.LogWarning("OperationalStatus is empty for FacilityId '{FacilityId}', using default 'Unknown'", facilityId);
+                }
+                else
+                {
+                    // Convert Yes/No to operational status names
+                    var lowerStatus = operationalStatusName.ToLower();
+                    if (lowerStatus == "yes" || lowerStatus == "y")
+                    {
+                        operationalStatusName = "Operational";
+                    }
+                    else if (lowerStatus == "no" || lowerStatus == "n")
+                    {
+                        operationalStatusName = "Non-Operational";
+                    }
                 }
 
                 if (!operationalStatusesDict.TryGetValue(operationalStatusName, out var operationalStatus))
                 {
-                    var skipReason = $"OperationalStatus '{operationalStatusName}' was not found in registered OperationalStatuses lookup table for FacilityId '{facilityId}'";
-                    _logger.LogWarning("Skipping: {Reason}", skipReason);
-                    skippedRecords.Add($"FacilityId '{facilityId}': {skipReason}");
-                    continue;
+                    // Try to find in database, if not found, create it
+                    var existingStatus = await _context.OperationalStatuses.FirstOrDefaultAsync(os => os.StatusName == operationalStatusName);
+                    if (existingStatus == null)
+                    {
+                        existingStatus = new OperationalStatus
+                        {
+                            StatusName = operationalStatusName,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _context.OperationalStatuses.Add(existingStatus);
+                        await _context.SaveChangesAsync();
+                        operationalStatusesDict[operationalStatusName] = existingStatus;
+                        operationalStatus = existingStatus;
+                        _logger.LogInformation("Created OperationalStatus '{StatusName}' for missing status data", operationalStatusName);
+                    }
+                    else
+                    {
+                        operationalStatusesDict[operationalStatusName] = existingStatus;
+                        operationalStatus = existingStatus;
+                    }
                 }
 
-                // Get Ownership
+                // Get Ownership - if missing, use default "Unknown" or skip
                 var ownershipType = record.Ownership?.Trim();
                 if (string.IsNullOrWhiteSpace(ownershipType))
                 {
-                    var skipReason = $"Ownership is empty for FacilityId '{facilityId}'";
-                    _logger.LogWarning("Skipping: {Reason}", skipReason);
-                    skippedRecords.Add($"FacilityId '{facilityId}': {skipReason}");
-                    continue;
+                    // Ownership column is missing from CSV - use default "Unknown" if it exists, otherwise skip
+                    ownershipType = "Unknown";
+                    _logger.LogWarning("Ownership is empty for FacilityId '{FacilityId}', using default 'Unknown'", facilityId);
                 }
 
                 if (!ownershipsDict.TryGetValue(ownershipType, out var ownership))
                 {
-                    var skipReason = $"Ownership '{ownershipType}' was not found in registered Ownerships lookup table for FacilityId '{facilityId}'";
-                    _logger.LogWarning("Skipping: {Reason}", skipReason);
-                    skippedRecords.Add($"FacilityId '{facilityId}': {skipReason}");
-                    continue;
+                    // Try to find "Unknown" in database, if not found, create it
+                    var unknownOwnership = await _context.Ownerships.FirstOrDefaultAsync(o => o.OwnershipType == ownershipType);
+                    if (unknownOwnership == null)
+                    {
+                        unknownOwnership = new Ownership
+                        {
+                            OwnershipType = ownershipType,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        _context.Ownerships.Add(unknownOwnership);
+                        await _context.SaveChangesAsync();
+                        ownershipsDict[ownershipType] = unknownOwnership;
+                        ownership = unknownOwnership;
+                        _logger.LogInformation("Created default Ownership '{OwnershipType}' for missing ownership data", ownershipType);
+                    }
+                    else
+                    {
+                        ownershipsDict[ownershipType] = unknownOwnership;
+                        ownership = unknownOwnership;
+                    }
                 }
 
                     // Parse coordinates with validation for decimal(10,7) constraint
@@ -542,33 +588,64 @@ public class CSVImportService : ICSVImportService
                 return trimmed;
             }
 
-                var healthFacility = new HealthFacility
-            {
-                FacilityId = facilityId,
-                HealthFacilityName = record.HealthFacilityName?.Trim() ?? string.Empty,
-                Latitude = latitude,
-                Longitude = longitude,
-                DistrictId = district.DistrictId,
-                FacilityTypeId = facilityType.FacilityTypeId,
-                OwnershipId = ownership.OwnershipId,
-                OperationalStatusId = operationalStatus.OperationalStatusId,
-                HCPartners = HandleNoValue(record.HCPartners),
-                HCProjectEndDate = ParseDate(record.HCProjectEndDate),
-                NutritionClusterPartners = HandleNoValue(record.NutritionClusterPartners),
-                DamalCaafimaadPartner = HandleNoValue(record.DamalCaafimaadPartner),
-                DamalCaafimaadProjectEndDate = ParseDate(record.DamalCaafimaadProjectEndDate),
-                BetterLifeProjectPartner = HandleNoValue(record.BetterLifeProjectPartner),
-                BetterLifeProjectEndDate = ParseDate(record.BetterLifeProjectEndDate),
-                CaafimaadPlusPartner = HandleNoValue(record.CaafimaadPlusPartner),
-                CaafimaadPlusProjectEndDate = ParseDate(record.CaafimaadPlusProjectEndDate),
-                FacilityInChargeName = HandleNoValue(record.FacilityInChargeName),
-                FacilityInChargeNumber = HandleFacilityInChargeNumber(record.FacilityInChargeNumber),
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow
-            };
-
-            _context.HealthFacilities.Add(healthFacility);
-            facilitiesCount++;
+                HealthFacility healthFacility;
+                
+                if (isUpdate)
+                {
+                    // Update existing facility
+                    healthFacility = existingFacility!;
+                    healthFacility.HealthFacilityName = record.HealthFacilityName?.Trim() ?? string.Empty;
+                    healthFacility.Latitude = latitude;
+                    healthFacility.Longitude = longitude;
+                    healthFacility.DistrictId = district.DistrictId;
+                    healthFacility.FacilityTypeId = facilityType.FacilityTypeId;
+                    healthFacility.OwnershipId = ownership.OwnershipId;
+                    healthFacility.OperationalStatusId = operationalStatus.OperationalStatusId;
+                    healthFacility.HCPartners = HandleNoValue(record.HCPartners);
+                    healthFacility.HCProjectEndDate = ParseDate(record.HCProjectEndDate);
+                    healthFacility.NutritionClusterPartners = HandleNoValue(record.NutritionClusterPartners);
+                    healthFacility.DamalCaafimaadPartner = HandleNoValue(record.DamalCaafimaadPartner);
+                    healthFacility.DamalCaafimaadProjectEndDate = ParseDate(record.DamalCaafimaadProjectEndDate);
+                    healthFacility.BetterLifeProjectPartner = HandleNoValue(record.BetterLifeProjectPartner);
+                    healthFacility.BetterLifeProjectEndDate = ParseDate(record.BetterLifeProjectEndDate);
+                    healthFacility.CaafimaadPlusPartner = HandleNoValue(record.CaafimaadPlusPartner);
+                    healthFacility.CaafimaadPlusProjectEndDate = ParseDate(record.CaafimaadPlusProjectEndDate);
+                    healthFacility.FacilityInChargeName = HandleNoValue(record.FacilityInChargeName);
+                    healthFacility.FacilityInChargeNumber = HandleFacilityInChargeNumber(record.FacilityInChargeNumber);
+                    healthFacility.UpdatedAt = DateTime.UtcNow;
+                    // Don't update CreatedAt for existing records
+                    updatedCount++;
+                }
+                else
+                {
+                    // Create new facility
+                    healthFacility = new HealthFacility
+                    {
+                        FacilityId = facilityId,
+                        HealthFacilityName = record.HealthFacilityName?.Trim() ?? string.Empty,
+                        Latitude = latitude,
+                        Longitude = longitude,
+                        DistrictId = district.DistrictId,
+                        FacilityTypeId = facilityType.FacilityTypeId,
+                        OwnershipId = ownership.OwnershipId,
+                        OperationalStatusId = operationalStatus.OperationalStatusId,
+                        HCPartners = HandleNoValue(record.HCPartners),
+                        HCProjectEndDate = ParseDate(record.HCProjectEndDate),
+                        NutritionClusterPartners = HandleNoValue(record.NutritionClusterPartners),
+                        DamalCaafimaadPartner = HandleNoValue(record.DamalCaafimaadPartner),
+                        DamalCaafimaadProjectEndDate = ParseDate(record.DamalCaafimaadProjectEndDate),
+                        BetterLifeProjectPartner = HandleNoValue(record.BetterLifeProjectPartner),
+                        BetterLifeProjectEndDate = ParseDate(record.BetterLifeProjectEndDate),
+                        CaafimaadPlusPartner = HandleNoValue(record.CaafimaadPlusPartner),
+                        CaafimaadPlusProjectEndDate = ParseDate(record.CaafimaadPlusProjectEndDate),
+                        FacilityInChargeName = HandleNoValue(record.FacilityInChargeName),
+                        FacilityInChargeNumber = HandleFacilityInChargeNumber(record.FacilityInChargeNumber),
+                        CreatedAt = DateTime.UtcNow,
+                        UpdatedAt = DateTime.UtcNow
+                    };
+                    _context.HealthFacilities.Add(healthFacility);
+                    facilitiesCount++;
+                }
 
                 // Batch save every 100 records
                 if (facilitiesCount % 100 == 0)
@@ -582,12 +659,34 @@ public class CSVImportService : ICSVImportService
             // Log summary of import
             int skippedCount = skippedRecords.Count;
             int processedCount = totalCSVRecords - skippedCount;
-            _logger.LogInformation("CSV import completed: {TotalRecords} total CSV records, {ProcessedCount} processed, {SkippedCount} skipped, {InsertedCount} new facilities inserted", 
-                totalCSVRecords, processedCount, skippedCount, facilitiesCount);
+            _logger.LogInformation("CSV import completed: {TotalRecords} total CSV records, {ProcessedCount} processed, {SkippedCount} skipped, {InsertedCount} new facilities inserted, {UpdatedCount} facilities updated", 
+                totalCSVRecords, processedCount, skippedCount, facilitiesCount, updatedCount);
+            
+            // Count skip reasons by type
+            var skipReasonCounts = new Dictionary<string, int>();
+            foreach (var skipReason in skippedRecords)
+            {
+                var reasonType = skipReason.Contains("already exists in database") ? "Already exists in database" :
+                                skipReason.Contains("FacilityId is empty") ? "Empty Facility ID" :
+                                skipReason.Contains("Duplicate FacilityId") ? "Duplicate in CSV" :
+                                skipReason.Contains("State is empty") ? "Empty State" :
+                                skipReason.Contains("Region") && skipReason.Contains("not found") ? "Region not found" :
+                                skipReason.Contains("District") && skipReason.Contains("not found") ? "District not found" :
+                                skipReason.Contains("FacilityType") && skipReason.Contains("not found") ? "FacilityType not found" :
+                                skipReason.Contains("empty") ? "Empty required field" :
+                                "Other";
+                
+                skipReasonCounts[reasonType] = skipReasonCounts.GetValueOrDefault(reasonType, 0) + 1;
+            }
             
             if (skippedRecords.Count > 0)
             {
-                _logger.LogWarning("Skipped records ({SkippedCount}): {SkippedReasons}", skippedCount, string.Join("; ", skippedRecords.Take(10)));
+                _logger.LogWarning("Skipped records summary ({SkippedCount} total):", skippedCount);
+                foreach (var kvp in skipReasonCounts.OrderByDescending(x => x.Value))
+                {
+                    _logger.LogWarning("  - {Reason}: {Count}", kvp.Key, kvp.Value);
+                }
+                _logger.LogWarning("Sample skipped records: {SkippedReasons}", string.Join("; ", skippedRecords.Take(10)));
                 if (skippedRecords.Count > 10)
                 {
                     _logger.LogWarning("... and {MoreCount} more skipped records. Check full logs for details.", skippedRecords.Count - 10);
@@ -626,7 +725,9 @@ public class CSVImportService : ICSVImportService
             regionsDict.Count,
             districtsDict.Count,
             facilityTypesDict.Count,
-            facilitiesCount
+            facilitiesCount,
+            updatedCount,
+            skippedRecords
         );
     }
 }
@@ -662,15 +763,17 @@ public sealed class CSVRecordMap : ClassMap<CSVRecord>
 {
     public CSVRecordMap()
     {
-        Map(m => m.NewFacilityId).Name("New Facility ID");
+        // Map to actual CSV column names from the uploaded file
+        Map(m => m.NewFacilityId).Name("Health Facility Code");
         Map(m => m.Latitude).Name("Latitude");
         Map(m => m.Longitude).Name("Longitude");
         Map(m => m.State).Name("State");
         Map(m => m.Region).Name("Region");
         Map(m => m.District).Name("District");
-        Map(m => m.HealthFacilityName).Name("Health Facility Name");
-        Map(m => m.HealthFacilityType).Name("Health Facility Type");
-        Map(m => m.Ownership).Name("Ownership");
+        Map(m => m.HealthFacilityName).Name("Name of health facility");
+        Map(m => m.HealthFacilityType).Name("Facility type");
+        // Ownership column not found in CSV - will be set to default or skipped
+        Map(m => m.Ownership).Name("Ownership").Optional();
         Map(m => m.HCPartners).Name("HC partners");
         Map(m => m.HCProjectEndDate).Name("HC Project End date");
         Map(m => m.NutritionClusterPartners).Name("Nutrition Cluster Partners");
@@ -680,8 +783,8 @@ public sealed class CSVRecordMap : ClassMap<CSVRecord>
         Map(m => m.BetterLifeProjectEndDate).Name("Better Life Project End Date");
         Map(m => m.CaafimaadPlusPartner).Name("Caafimaad Plus Partner");
         Map(m => m.CaafimaadPlusProjectEndDate).Name("Caafimaad Plus Project end");
-        Map(m => m.FacilityInChargeName).Name("Facility In-charge Name");
-        Map(m => m.FacilityInChargeNumber).Name("Facility in-charge Number");
-        Map(m => m.OperationalStatus).Name("Operational Status");
+        Map(m => m.FacilityInChargeName).Name("Full Name of the helath Facility in-charge");
+        Map(m => m.FacilityInChargeNumber).Name("Mobile number of the helath Facility in-charge");
+        Map(m => m.OperationalStatus).Name("Is the health facility currently operational and providing services to patients?");
     }
 }

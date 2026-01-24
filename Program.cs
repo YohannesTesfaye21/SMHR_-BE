@@ -350,7 +350,11 @@ app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "SMHFR API V1");
-    c.RoutePrefix = "swagger"; // Swagger UI at /swagger/index.html
+    c.RoutePrefix = "swagger"; // Swagger UI at /swagger (not /swagger/index.html)
+    c.DisplayRequestDuration();
+    c.EnableDeepLinking();
+    c.EnableFilter();
+    c.ShowExtensions();
 });
 
 // Don't use HTTPS redirection - it causes issues when both HTTP and HTTPS are enabled

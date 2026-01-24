@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SMHFR_BE.Data;
@@ -484,6 +485,76 @@ public class HealthFacilitiesController : ControllerBase
         {
             _logger.LogError(ex, "Error deleting health facility with ID {Id}", id);
             return StatusCode(500, ApiResponse.ErrorResult("An error occurred while deleting the health facility", new List<string> { ex.Message }));
+        }
+    }
+
+    /// <summary>
+    /// Clear all database data (except users). Deletes all health facilities, states, regions, districts, and lookup tables.
+    /// </summary>
+    [HttpDelete("clear-all")]
+    [Authorize(Roles = "Admin")]
+    public async Task<ActionResult<ApiResponse<object>>> ClearAllData([FromQuery] bool includeUsers = false)
+    {
+        try
+        {
+            var counts = new
+            {
+                healthFacilities = await _context.HealthFacilities.CountAsync(),
+                districts = await _context.Districts.CountAsync(),
+                regions = await _context.Regions.CountAsync(),
+                states = await _context.States.CountAsync(),
+                facilityTypes = await _context.FacilityTypes.CountAsync(),
+                operationalStatuses = await _context.OperationalStatuses.CountAsync(),
+                ownerships = await _context.Ownerships.CountAsync()
+            };
+
+            // Delete in order to respect foreign key constraints
+            _context.HealthFacilities.RemoveRange(await _context.HealthFacilities.ToListAsync());
+            await _context.SaveChangesAsync();
+
+            _context.Districts.RemoveRange(await _context.Districts.ToListAsync());
+            await _context.SaveChangesAsync();
+
+            _context.Regions.RemoveRange(await _context.Regions.ToListAsync());
+            await _context.SaveChangesAsync();
+
+            _context.States.RemoveRange(await _context.States.ToListAsync());
+            await _context.SaveChangesAsync();
+
+            _context.FacilityTypes.RemoveRange(await _context.FacilityTypes.ToListAsync());
+            await _context.SaveChangesAsync();
+
+            _context.OperationalStatuses.RemoveRange(await _context.OperationalStatuses.ToListAsync());
+            await _context.SaveChangesAsync();
+
+            _context.Ownerships.RemoveRange(await _context.Ownerships.ToListAsync());
+            await _context.SaveChangesAsync();
+
+            if (includeUsers)
+            {
+                var userManager = HttpContext.RequestServices.GetRequiredService<UserManager<ApplicationUser>>();
+                var users = await userManager.Users.ToListAsync();
+                foreach (var user in users)
+                {
+                    await userManager.DeleteAsync(user);
+                }
+            }
+
+            _logger.LogWarning("⚠️  All database data cleared by admin. Deleted: {Counts}", counts);
+
+            return Ok(ApiResponse<object>.SuccessResult(
+                new 
+                { 
+                    deletedCounts = counts,
+                    message = "All database data cleared successfully" + (includeUsers ? " (including users)" : " (users preserved)")
+                },
+                $"All database data cleared successfully. Deleted {counts.healthFacilities} facilities, {counts.districts} districts, {counts.regions} regions, {counts.states} states, and all lookup tables."
+            ));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error clearing all database data");
+            return StatusCode(500, ApiResponse<object>.ErrorResult("An error occurred while clearing database data", new List<string> { ex.Message }));
         }
     }
 
