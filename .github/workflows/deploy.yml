@@ -114,8 +114,9 @@ jobs:
                 dotnet ef database update --project SMHFR_BE.csproj
               "
             
-            # Start API
+            # Rebuild and start API (rebuild to get latest code changes)
             docker volume rm smhfr-be_api_data 2>/dev/null || true
+            docker compose --env-file .env build --no-cache api
             docker compose --env-file .env up -d --no-deps api
             
             # Wait for API
