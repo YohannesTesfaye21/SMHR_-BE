@@ -67,3 +67,8 @@ certs/*.pem
 certs/*.key
 certs/*.crt
 !certs/.gitkeep
+
+# Environment variables
+.env
+.env.local
+.env.*.local
